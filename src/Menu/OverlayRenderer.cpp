@@ -15,6 +15,8 @@
 #include "Features/PerformanceOverlay.h"
 #include "Features/PerformanceOverlay/ABTesting/ABTesting.h"
 #include "Features/VR.h"
+#include "Features/HiZOcclusion.h"
+#include "Features/OverlayFeature.h"
 
 void OverlayRenderer::RenderOverlay(
 	Menu& menu,
@@ -72,11 +74,24 @@ bool OverlayRenderer::ShouldSkipRendering()
 	auto hide = shaderCache->IsHideErrors();
 	auto* abTestingManager = ABTestingManager::GetSingleton();
 
+	// Check if any overlay feature wants to be visible
+	bool anyOverlayVisible = false;
+	for (Feature* feat : Feature::GetFeatureList()) {
+		if (feat && feat->loaded) {
+			if (auto* overlay = dynamic_cast<const OverlayFeature*>(feat)) {
+				if (overlay->IsOverlayVisible()) {
+					anyOverlayVisible = true;
+					break;
+				}
+			}
+		}
+	}
+
 	return !(shaderCache->IsCompiling() ||
 			 Menu::GetSingleton()->IsEnabled ||
 			 abTestingManager->IsEnabled() ||
 			 (failed && !hide) ||
-			 globals::features::performanceOverlay.settings.ShowInOverlay);
+			 anyOverlayVisible);
 }
 
 void OverlayRenderer::HandleFontReload(Menu& menu, float& cachedFontSize, float currentFontSize)
