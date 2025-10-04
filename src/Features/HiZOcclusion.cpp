@@ -203,21 +203,25 @@ void HiZOcclusion::DrawSettings()
         // Status line
         ImGui::Separator();
         ImGui::Text("Frame: %u", globals::state ? globals::state->frameCount : 0);
-		ImGui::Text("Resources: %s", resourcesSetup ? "true" : "false");
+		//ImGui::Text("Resources: %s", resourcesSetup ? "true" : "false");
 		ImGui::Text("Status: %s", status.c_str());
-        ImGui::Text("Hi-Z: %s, mips=%u", hiZTexture ? "Ready" : "Not Built", hiZMipCount);
-        ImGui::Text("SRVs: %u, UAVs: %u", (uint32_t)hiZSRVsPerMip.size(), (uint32_t)hiZUAVs.size());
+        //ImGui::Text("Hi-Z: %s, mips=%u", hiZTexture ? "Ready" : "Not Built", hiZMipCount);
+        //ImGui::Text("SRVs: %u, UAVs: %u", (uint32_t)hiZSRVsPerMip.size(), (uint32_t)hiZUAVs.size());
         ImGui::Text("Geometry from frame %u: %u", globals::state->frameCount - 1, stats.geometryListSize);
-        ImGui::Text("CPU Results list size: %u", (uint32_t)visibilityResultsCPU.size());
-        ImGui::Text("Map Results list size: %u", (uint32_t)visibilityResultsMap.size());
+        //ImGui::Text("CPU Results list size: %u", (uint32_t)visibilityResultsCPU.size());
+        //ImGui::Text("Map Results list size: %u", (uint32_t)visibilityResultsMap.size());
         ImGui::Text("Total tested: %u", stats.totalTested);
         ImGui::Text("Culled: %u", stats.culled);
         ImGui::Text("Visible: %u", stats.visible);
-        ImGui::Text("GPU time: %.2f ms", stats.gpuCullingTimeMs);
-        ImGui::Text("Resource setup duration: %.2f ms", stats.resourceSetupDurationMS);
-        ImGui::Text("Recreate duration: %.2f ms", stats.recreateDurationMS);
-        ImGui::Text("Visibility tests duration: %.2f ms", stats.gpuCullingTimeMs);
+        // Display profiling durations in micro seconds
+        ImGui::Text("GPU time: %.2f us", stats.gpuCullingTimeMs * 1000);
+        ImGui::Text("Copy results time: %.2f us", stats.copyTimeMs * 1000);
+        ImGui::Text("Map time: %.2f us", stats.mapTimeMs * 1000);
+        ImGui::Text("Copy data time: %.2f us", stats.copyDataTimeMs * 1000);
+        ImGui::Text("Unmap time: %.2f us", stats.unmapTimeMs * 1000);
+        ImGui::Text("CPU Readback time: %.2f us", stats.readbackTimeMs * 1000);
 
+        /*
         // Detailed resource validation in UI
         if (ImGui::TreeNode("Resource Validation")) {
             ImGui::Text("Texture pointer: %p", hiZTexture);
@@ -236,6 +240,7 @@ void HiZOcclusion::DrawSettings()
                 static_cast<unsigned long long>(hiZSRVsPerMip.size()),
                 static_cast<unsigned long long>(hiZUAVs.size()));
         }
+        */
 
         ImGui::TreePop();
     }
@@ -253,41 +258,6 @@ void HiZOcclusion::DrawSettings()
         
         if (ImGui::Checkbox("Debug Mode", &settings.debugMode)) {
             logger::info("Debug mode toggled: {}", settings.debugMode);
-        }
-        
-        // Display culling statistics
-        if (settings.showCullingStats) {
-            ImGui::Separator();
-            ImGui::Text("Frame Statistics:");
-            ImGui::Text("  Total tested: %u", stats.totalTested);
-            ImGui::Text("  Culled: %u", stats.culled);
-            ImGui::Text("  Visible: %u", stats.visible);
-            ImGui::Text("  Culling efficiency: %.1f%%", stats.cullingEfficiency);
-            
-            ImGui::Separator();
-            ImGui::Text("Timing Breakdown (ms):");
-            ImGui::Text("  Hi-Z build: %.3f", stats.hiZBuildTimeMs);
-            ImGui::Text("  Geometry processing: %.3f", stats.geometryProcessingTimeMs);
-            ImGui::Text("  GPU culling: %.3f", stats.gpuCullingTimeMs);
-            ImGui::Text("  Readback: %.3f", stats.readbackTimeMs);
-            ImGui::Text("  Total overhead: %.3f", stats.cullingOverheadMs);
-            
-            ImGui::Separator();
-            ImGui::Text("Performance Metrics:");
-            ImGui::Text("  Processing rate: %.0f geo/ms", stats.avgGeometryPerMs);
-            ImGui::Text("  Points per object: %u", stats.pointsTestedPerObject);
-            
-            if (!stats.recentEfficiency.empty()) {
-                ImGui::Separator();
-                ImGui::Text("Running Averages (%u frames):", (uint32_t)stats.recentEfficiency.size());
-                ImGui::Text("  Avg efficiency: %.1f%%", stats.avgCullingEfficiency);
-                ImGui::Text("  Avg overhead: %.3f ms", stats.avgOverheadMs);
-                ImGui::Text("  Avg geometry: %.0f", stats.avgGeometryCount);
-                
-                float avgProcessingRate = stats.avgGeometryCount > 0 ? 
-                    stats.avgGeometryCount / std::max(stats.avgOverheadMs, 0.001f) : 0.0f;
-                ImGui::Text("  Avg processing rate: %.0f geo/ms", avgProcessingRate);
-            }
         }
         
         ImGui::TreePop();
@@ -481,7 +451,6 @@ void HiZOcclusion::Prepass()
     stats.visible = 0;
     stats.resourceSetupDurationMS = 0.0f;
     stats.recreateDurationMS = 0.0f;
-    stats.gpuCullingTimeMs = 0.0f;
     stats.behindCamera = 0;
     stats.invalidRadius = 0;
     stats.cameraInside = 0;
@@ -497,8 +466,8 @@ void HiZOcclusion::Prepass()
     
     // Reset timing statistics for this frame
     stats.geometryProcessingTimeMs = 0.0f;
-    stats.gpuCullingTimeMs = 0.0f;
-    stats.readbackTimeMs = 0.0f;
+    //stats.gpuCullingTimeMs = 0.0f;
+    //stats.readbackTimeMs = 0.0f;
 
     if (!resourcesSetup) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -537,29 +506,23 @@ void HiZOcclusion::Prepass()
         geometryBounds.reserve(16384);
     }
 
-    // Only process visibility tests if we have geometry from previous frame
-    if (!pendingGeometry.empty()) {
-        auto startVisibilityTestsTimer = std::chrono::high_resolution_clock::now();
-       
-        // Clear old results
-        visibilityResultsCPU.clear();
-        visibilityResultsMap.clear();
-
+    if (!unCullNextFrame.empty()) {
         // Re-add previously hidden geometry for continuous testing
         for (auto* geo : unCullNextFrame) {
             if (geo && pendingGeometrySet.find(geo) == pendingGeometrySet.end()) {
+                //geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
                 pendingGeometry.push_back(geo);
                 pendingGeometrySet.insert(geo);
             }
         }
-        unCullNextFrame.clear();
-       
-        // Dispatch GPU visibility tests for last frame's geometry
-        ExecuteVisibilityTests();
-        auto endVisibilityTestsTimer = std::chrono::high_resolution_clock::now();
-        const double durationMs = std::chrono::duration<double, std::milli>(endVisibilityTestsTimer - startVisibilityTestsTimer).count();
-        stats.gpuCullingTimeMs = static_cast<float>(durationMs);
+    }
 
+    if (readbackState.hasPendingRead || !pendingGeometry.empty()) {
+        ExecuteVisibilityTests();
+    }
+
+    // Only process visibility tests if we have geometry from previous frame
+    if (!pendingGeometry.empty()) {
         // Clean up resources that we are finished with
         pendingGeometry.clear();
         pendingGeometrySet.clear();
@@ -595,16 +558,17 @@ bool HiZOcclusion::InitHiZResources()
     }
 
     // Verify depth buffer source and log details
-    logger::info("Frame {} - HiZ using depth buffer: kPOST_ZPREPASS_COPY", globals::state->frameCount);
+    //logger::info("Frame {} - HiZ using depth buffer: kPOST_ZPREPASS_COPY", globals::state->frameCount);
     
     // Check if other depth targets are available for comparison
-    auto& depthStencils = renderer->GetDepthStencilData().depthStencils;
-    logger::info("Available depth targets:");
+    //auto& depthStencils = renderer->GetDepthStencilData().depthStencils;
+    /*logger::info("Available depth targets:");
     for (int i = 0; i < RE::RENDER_TARGETS_DEPTHSTENCIL::kTOTAL; ++i) {
         if (depthStencils[i].depthSRV) {
             logger::info("  Target {}: Available", i);
         }
     }
+    */
     
     // Log depth buffer properties
     D3D11_TEXTURE2D_DESC depthTexDesc{};
@@ -814,8 +778,6 @@ bool HiZOcclusion::InitHiZResources()
 
     // Build level 0 from depth with safety checks
     {
-        ScopedTimer timer(stats.hiZBuildTimeMs);
-        
         // Verify all required resources are valid before proceeding
         if (!hiZBuildLevel0CS) {
             logger::error("hiZBuildLevel0CS is null - cannot build Hi-Z pyramid");
@@ -984,7 +946,7 @@ bool HiZOcclusion::SetupGPUCullingResources()
     readbackDesc.StructureByteStride = 0;
     readbackDesc.MiscFlags = 0;
 
-    HRESULT rbhr = device->CreateBuffer(&readbackDesc, nullptr, &visibilityReadbackBuffer);
+    HRESULT rbhr = device->CreateBuffer(&readbackDesc, nullptr, &readbackState.stagingBuffer);
     if (FAILED(rbhr)) {
         logger::error("Failed to create visibility readback buffer");
         return false;
@@ -1088,20 +1050,17 @@ void HiZOcclusion::ExecuteVisibilityTests()
     // Clear previous frame results and prepare for N+1 processing
     visibilityResultsMap.clear();
     visibilityResultsCPU.clear();
-    
-    // Reset timing statistics for this frame
-    stats.geometryProcessingTimeMs = 0.0f;
-    stats.gpuCullingTimeMs = 0.0f;
-    stats.readbackTimeMs = 0.0f;
-    
+
     // Check if we have geometry from previous frame to process
     if (pendingGeometry.empty()) {
         logger::debug("ExecuteVisibilityTests: No geometry to test (pending={})", 
                      pendingGeometry.size());
         return;
     }
-    
-    uint32_t numGeometry = static_cast<uint32_t>(pendingGeometry.size());
+
+    numGeometry = static_cast<uint32_t>(pendingGeometry.size());
+
+    pendingGeometrySnapshot = pendingGeometry;
 
     // Create the worldBound array for the remaining geometry
     geometryBounds.clear();
@@ -1113,272 +1072,41 @@ void HiZOcclusion::ExecuteVisibilityTests()
 
         geometryBounds[i] = DirectX::XMFLOAT4(worldBound.center.x, worldBound.center.y, worldBound.center.z, worldBound.radius);
     }
-    
+
     logger::debug("ExecuteVisibilityTests: Processing {} geometry objects from frame {}", geometryBounds.size(), globals::state->frameCount - 1);
 
-    // Write all geometry bounds to GPU buffer
+    // Result readback operation
     {
-        ScopedTimer timer(stats.geometryProcessingTimeMs);
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        HRESULT hr = context->Map(geometryBoundsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        if (SUCCEEDED(hr)) {
-            memcpy(mapped.pData, geometryBounds.data(), numGeometry * sizeof(DirectX::XMFLOAT4));
-            context->Unmap(geometryBoundsBuffer, 0);
-        } else {
-            logger::warn("ExecuteVisibilityTests: Failed to map geometry bounds buffer");
-            return;
-        }
-    }
-
-    // Update constant buffer with camera parameters
-    {
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        HiZSettings params{};
-        params.hiZParams = DirectX::XMFLOAT4(static_cast<float>(hiZMipCount), settings.conservativeBias, static_cast<float>(numGeometry), static_cast<float>(settings.debugMode));
-        auto eyePos = Util::GetEyePosition(0);
-        params.cameraWorldPos = DirectX::XMFLOAT3(eyePos.x, eyePos.y, eyePos.z);
-        params.overlaySettings = DirectX::XMFLOAT4(
-            settings.enableBoundsViewer ? 1.0f : 0.0f,
-            static_cast<float>(settings.boundsMaxObjects),
-            0.0f, 0.0f);
-        
-        // Pack color toggles into float4 (7 bits used)
-        float toggleBits = 0.0f;
-        if (settings.showBehindCamera) toggleBits += 1.0f;       // bit 0 - earlyOutReason 1
-        if (settings.showInvalidRadius) toggleBits += 2.0f;      // bit 1 - earlyOutReason 2
-        if (settings.showCameraInside) toggleBits += 4.0f;       // bit 2 - earlyOutReason 4
-        if (settings.showInvalidDepth) toggleBits += 8.0f;       // bit 3 - earlyOutReason 5
-        if (settings.showNearestOffscreen) toggleBits += 16.0f;  // bit 4 - earlyOutReason 6
-        if (settings.showVisible) toggleBits += 32.0f;           // bit 5 - earlyOutReason 0
-        if (settings.showOccluded) toggleBits += 64.0f;          // bit 6 - earlyOutReason -1
-        params.overlayColorToggles = DirectX::XMFLOAT4(toggleBits, 0.0f, 0.0f, 0.0f);
-
-        if (!prevframeCamDataValid) {
-            auto vd = Util::GetCameraData(0);
-            // Extract matrices from vd (whatever accessors you currently use)
-            // Make sure to convert to row-major XMFLOAT4X4 for the cbuffers:
-            DirectX::XMMATRIX V = vd.viewMat;
-            DirectX::XMMATRIX P = vd.projMat;
-            DirectX::XMMATRIX VP = DirectX::XMMatrixMultiply(V, P);
-        
-            DirectX::XMStoreFloat4x4(&prevframeCam.view,     V);  // row-major copy
-            DirectX::XMStoreFloat4x4(&prevframeCam.proj,     P);
-            DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
-        
-            prevframeCamDataValid = true;
-            return;
-        }
-
-        // Camera Data because FrameBuffer might not be set up yet
-        auto camData = prevframeCam;
-        {
-            // Match FrameBuffer layout (row_major in HLSL): store row-major matrices.
-            // Our camData matrices appear transposed relative to FrameBuffer, so transpose before upload.
-            DirectX::XMMATRIX V  = DirectX::XMLoadFloat4x4(&camData.view);
-            DirectX::XMMATRIX P  = DirectX::XMLoadFloat4x4(&camData.proj);
-            DirectX::XMMATRIX VP = DirectX::XMLoadFloat4x4(&camData.viewProj);
-
-            DirectX::XMStoreFloat4x4(&params.cameraViewMat,     DirectX::XMMatrixTranspose(V));
-            DirectX::XMStoreFloat4x4(&params.cameraProjMat,     DirectX::XMMatrixTranspose(P));
-            DirectX::XMStoreFloat4x4(&params.cameraViewProjMat, DirectX::XMMatrixTranspose(VP));
-
-            if (settings.debugMode) {
-                // Log camera world position
-                logger::info("HiZ Params - CameraWorldPos: [{}, {}, {}]",
-                    params.cameraWorldPos.x, params.cameraWorldPos.y, params.cameraWorldPos.z);
-
-                // Log View matrix (row-major layout)
-                const auto& VM = params.cameraViewMat;
-                logger::info("Frame {}: HiZ Params - ViewMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VM._11, VM._12, VM._13, VM._14);
-                logger::info("Frame {}: HiZ Params - ViewMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VM._21, VM._22, VM._23, VM._24);
-                logger::info("Frame {}: HiZ Params - ViewMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VM._31, VM._32, VM._33, VM._34);
-                logger::info("Frame {}: HiZ Params - ViewMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VM._41, VM._42, VM._43, VM._44);
-
-                // Log Proj matrix
-                const auto& PM = params.cameraProjMat;
-                logger::info("Frame {}: HiZ Params - ProjMat r0: [{}, {}, {}, {}]", globals::state->frameCount, PM._11, PM._12, PM._13, PM._14);
-                logger::info("Frame {}: HiZ Params - ProjMat r1: [{}, {}, {}, {}]", globals::state->frameCount, PM._21, PM._22, PM._23, PM._24);
-                logger::info("Frame {}: HiZ Params - ProjMat r2: [{}, {}, {}, {}]", globals::state->frameCount, PM._31, PM._32, PM._33, PM._34);
-                logger::info("Frame {}: HiZ Params - ProjMat r3: [{}, {}, {}, {}]", globals::state->frameCount, PM._41, PM._42, PM._43, PM._44);
-
-                // Log ViewProj matrix
-                const auto& VPM = params.cameraViewProjMat;
-                logger::info("Frame {}: HiZ Params - ViewProjMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VPM._11, VPM._12, VPM._13, VPM._14);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VPM._21, VPM._22, VPM._23, VPM._24);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VPM._31, VPM._32, VPM._33, VPM._34);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VPM._41, VPM._42, VPM._43, VPM._44);
-
-                // Log View Inverse matrix (row-major, matching FrameBuffer::CameraViewInverse)
-                // We uploaded View as transpose(V), so inverse(View) row-major is transpose(inverse(V))
-                DirectX::XMMATRIX V_inv = DirectX::XMMatrixInverse(nullptr, V);
-                DirectX::XMFLOAT4X4 VInvM;
-                DirectX::XMStoreFloat4x4(&VInvM, DirectX::XMMatrixTranspose(V_inv));
-                logger::info("Frame {}: HiZ Params - ViewInvMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._11, VInvM._12, VInvM._13, VInvM._14);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._21, VInvM._22, VInvM._23, VInvM._24);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._31, VInvM._32, VInvM._33, VInvM._34);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._41, VInvM._42, VInvM._43, VInvM._44);
-            }
-        }
-
-        // Update prevframeCam
-        {
-            auto vd = Util::GetCameraData(0);
-            DirectX::XMMATRIX V = vd.viewMat;
-            DirectX::XMMATRIX P = vd.projMat;
-            DirectX::XMMATRIX VP = DirectX::XMMatrixMultiply(V, P);
-
-            DirectX::XMStoreFloat4x4(&prevframeCam.view,     V);  // row-major copy
-            DirectX::XMStoreFloat4x4(&prevframeCam.proj,     P);
-            DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
-        }
-
-        auto renderer = globals::game::renderer;
-        D3D11_TEXTURE2D_DESC texDesc{};
-        renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture->GetDesc(&texDesc);
-
-        params.bufferDim = { (float)texDesc.Width, (float)texDesc.Height };
-
-        //logger::info("HiZ Params - BufferDim: [{}, {}]", params.bufferDim.x, params.bufferDim.y);
-
-        params.bufferDimInv = { 1.0f / params.bufferDim.x, 1.0f / params.bufferDim.y };
-
-        //logger::info("HiZ Params - BufferDimInv: [{}, {}]", params.bufferDimInv.x, params.bufferDimInv.y);
-
-        if (SUCCEEDED(context->Map(hiZTestParamsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-            memcpy(mapped.pData, &params, sizeof(HiZSettings));
-            context->Unmap(hiZTestParamsBuffer, 0);
-        } else {
-            logger::warn("ExecuteVisibilityTests: failed to map hiZTestParamsBuffer");
-            return;
-        }
-
-        // Set up framebuffer
-
-		ID3D11Buffer* buffers[1] = { *globals::game::perFrame.get() };
-
-		ID3D11Buffer* vrBuffer = nullptr;
-
-		if (REL::Module::IsVR()) {
-			static REL::Relocation<ID3D11Buffer**> VRValues{ REL::Offset(0x3180688) };
-			vrBuffer = *VRValues.get();
-		}
-		if (vrBuffer) {
-			context->CSSetConstantBuffers(12, 1, buffers);
-			context->CSSetConstantBuffers(13, 1, &vrBuffer);
-		} else {
-			context->CSSetConstantBuffers(12, 1, buffers);
-		}
-
-        // Set up shared data
-        globals::state->UpdateSharedData(true, false);
-    }
-
-    // Bind resources and dispatch Hi-Z test compute shader for batch processing
-    {
-        if (settings.enableBoundsViewer) {
-            if (!boundsOverlayTex || boundsOverlayW != hiZWidth || boundsOverlayH != hiZHeight) {
-                ReleaseBoundsOverlayResources();
-                SetupBoundsOverlayResources(hiZWidth, hiZHeight);
-            }
-            ClearBoundsOverlay();
-        }
-
-        const bool overlayEnabled = settings.enableBoundsViewer && (boundsOverlayUAV != nullptr);
-
-        UINT uavCount = overlayEnabled ? 3u : 2u;
-        ID3D11UnorderedAccessView* uavs[3] = {
-            visibilityResultsUAV,
-            (settings.debugMode || settings.enableBoundsViewer) ? debugResultsUAV : nullptr,
-            overlayEnabled ? boundsOverlayUAV : nullptr
-        };
-        context->CSSetUnorderedAccessViews(0, uavCount, uavs, nullptr);
-
-        ID3D11ShaderResourceView* srvs[] = { hiZSRV, geometryBoundsSRV };
-        context->CSSetShaderResources(0, 2, srvs);
-        context->CSSetConstantBuffers(0, 1, &hiZTestParamsBuffer);
-
-        if (hiZSampler) {
-            context->CSSetSamplers(0, 1, &hiZSampler);
-        }
-        context->CSSetShader(hiZTestCS, nullptr, 0);
-
-        // Dispatch for batch processing
-        {
-            ScopedTimer timer(stats.gpuCullingTimeMs);
-            const uint32_t threadGroupSize = 256;
-            uint32_t numGroups = (numGeometry + threadGroupSize - 1) / threadGroupSize;
-            context->Dispatch(numGroups, 1, 1);
-        }
-
-        // Unbind resources (must pass arrays of nulls)
-        ID3D11ShaderResourceView* nullSRVs_tests[2] = { nullptr, nullptr };
-        context->CSSetShaderResources(0, 2, nullSRVs_tests);
-        ID3D11UnorderedAccessView* nullUAVs_tests[2] = { nullptr, nullptr };
-        context->CSSetUnorderedAccessViews(0, 2, nullUAVs_tests, nullptr);
-        ID3D11SamplerState* nullSamplers_tests[1] = { nullptr };
-        context->CSSetSamplers(0, 1, nullSamplers_tests);
-        context->CSSetShader(nullptr, nullptr, 0);
-    }
-
-    // Read back all results synchronously
-    if (!visibilityReadbackBuffer) {
-        logger::warn("ExecuteVisibilityTests: visibilityReadbackBuffer is null");
-        return;
-    }
-
-    // Time the readback operation
-    {
-        ScopedTimer timer(stats.readbackTimeMs);
-        
-        // Copy current frame results to write buffer (for next frame)
-        context->CopyResource(visibilityReadbackBuffer, visibilityResultsBuffer);
-
-        if (visibilityReadbackBuffer) {
-            D3D11_MAPPED_SUBRESOURCE mapped{};
-            HRESULT hr = context->Map(visibilityReadbackBuffer, 0, D3D11_MAP_READ, 0, &mapped);
+        // Check if we have our mapped results
+        if (readbackState.hasPendingRead) {
+            HRESULT hr = context->Map(readbackState.stagingBuffer, 0, 
+                D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, 
+                &readbackState.mappedData);
             if (SUCCEEDED(hr)) {
-                const HiZOcclusion::OcclusionResult* visibilityData = static_cast<const HiZOcclusion::OcclusionResult*>(mapped.pData);
-                visibilityResultsCPU.assign(visibilityData, visibilityData + numGeometry);
-                context->Unmap(visibilityReadbackBuffer, 0);
-    
-                // Populate the visibility map for quick lookups
-                for (uint32_t i = 0; i < numGeometry; ++i) {
-                    if (!pendingGeometry[i]) continue;
-                    
-                    const auto& result = visibilityData[i];
-                    bool culled = (result.objectDepth > result.sceneDepth + settings.conservativeBias);
-                    
-                    if (culled) {
-                        // Hide the geometry
-                        pendingGeometry[i]->GetFlags().set(RE::NiAVObject::Flag::kHidden);
-                        
-                        // Immediately re-add for next frame's test
-                        // Store in temporary list to avoid modifying pendingGeometry during iteration
-                        unCullNextFrame.push_back(pendingGeometry[i]);
-                        stats.culled++;
-                    } else {
-                        // Visible - ensure not hidden
-                        pendingGeometry[i]->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
-                        stats.visible++;
-                    }
-                }
-                
-                // Verify depth buffer contents by sampling known screen positions
-                VerifyDepthBufferContents();
-                
-                // Update statistics
-                stats.totalTested = numGeometry;
-                stats.frameIndex = currentFrame;
-                
-                logger::debug("ExecuteVisibilityTests: Processed {} objects, {} culled, {} visible", 
-                            numGeometry, stats.culled, stats.visible);
-                
-                // Update performance metrics
-                UpdatePerformanceMetrics();
+                ProcessVisibilityResults();
+                context->Unmap(readbackState.stagingBuffer, 0);
+                readbackState.hasPendingRead = false;
             }
         }
+
+        pendingGeometryResults = pendingGeometrySnapshot;
+        numGeometryPending = numGeometry;
+
+        // Execute HiZ Tests for this frame
+        DispatchComputeShader();
+
+        // Copy current frame results to readback staging buffer
+        context->CopyResource(readbackState.stagingBuffer, visibilityResultsBuffer);
+
+        // Set pending read state
+        readbackState.hasPendingRead = true;
+        readbackState.pendingFrameIndex = globals::state->frameCount;
+
+        // Update statistics
+        stats.frameIndex = globals::state->frameCount;
     }
 
+    /*
     // Read back and log runtime diagnostics from shader when enabled
     if ((settings.debugMode || settings.enableBoundsViewer) && debugResultsBuffer && debugReadbackBuffer) {
 
@@ -1457,6 +1185,7 @@ void HiZOcclusion::ExecuteVisibilityTests()
             }
         }
     }
+    */
 }
 
 void HiZOcclusion::UnbindD3DResources()
@@ -1624,30 +1353,269 @@ void HiZOcclusion::UpdatePerformanceMetrics()
     }
 }
 
-bool HiZOcclusion::IsGeometryCulled(RE::BSGeometry* geometry) const
-{
-    // If Hi-Z culling is disabled, never cull
-    if (!settings.enableHiZCulling) {
-        return false;
-    }
+void HiZOcclusion::DispatchComputeShader() {
+    auto context = globals::d3d::context;
+    if (!context) return;
 
-    // Check if we have a visibility result for this geometry
-    auto it = visibilityResultsMap.find(geometry);
-    if (it != visibilityResultsMap.end()) {
-        const auto& result = it->second;
+    // Write all geometry bounds to GPU buffer
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        HRESULT hr = context->Map(geometryBoundsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (SUCCEEDED(hr)) {
+            memcpy(mapped.pData, geometryBounds.data(), numGeometry * sizeof(DirectX::XMFLOAT4));
+            context->Unmap(geometryBoundsBuffer, 0);
+        } else {
+            logger::warn("ExecuteVisibilityTests: Failed to map geometry bounds buffer");
+            return;
+        }
+    }
+    
+    // Update constant buffer with camera parameters
+    {
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        HiZSettings params{};
+        params.hiZParams = DirectX::XMFLOAT4(static_cast<float>(hiZMipCount), settings.conservativeBias, static_cast<float>(numGeometry), static_cast<float>(settings.debugMode));
+        auto eyePos = Util::GetEyePosition(0);
+        params.cameraWorldPos = DirectX::XMFLOAT3(eyePos.x, eyePos.y, eyePos.z);
+        params.overlaySettings = DirectX::XMFLOAT4(
+            settings.enableBoundsViewer ? 1.0f : 0.0f,
+            static_cast<float>(settings.boundsMaxObjects),
+            0.0f, 0.0f);
         
-        // Check for sentinel value indicating edge-case (not tested)
-        if (result.sceneDepth < 0.0f) {
-            // Sentinel value: object at screen edge, never cull
-            return false;
+        // Pack color toggles into float4 (7 bits used)
+        float toggleBits = 0.0f;
+        if (settings.showBehindCamera) toggleBits += 1.0f;       // bit 0 - earlyOutReason 1
+        if (settings.showInvalidRadius) toggleBits += 2.0f;      // bit 1 - earlyOutReason 2
+        if (settings.showCameraInside) toggleBits += 4.0f;       // bit 2 - earlyOutReason 4
+        if (settings.showInvalidDepth) toggleBits += 8.0f;       // bit 3 - earlyOutReason 5
+        if (settings.showNearestOffscreen) toggleBits += 16.0f;  // bit 4 - earlyOutReason 6
+        if (settings.showVisible) toggleBits += 32.0f;           // bit 5 - earlyOutReason 0
+        if (settings.showOccluded) toggleBits += 64.0f;          // bit 6 - earlyOutReason -1
+        params.overlayColorToggles = DirectX::XMFLOAT4(toggleBits, 0.0f, 0.0f, 0.0f);
+
+        if (!prevframeCamDataValid) {
+            auto vd = Util::GetCameraData(0);
+            // Extract matrices from vd (whatever accessors you currently use)
+            // Make sure to convert to row-major XMFLOAT4X4 for the cbuffers:
+            DirectX::XMMATRIX V = vd.viewMat;
+            DirectX::XMMATRIX P = vd.projMat;
+            DirectX::XMMATRIX VP = DirectX::XMMatrixMultiply(V, P);
+        
+            DirectX::XMStoreFloat4x4(&prevframeCam.view,     V);  // row-major copy
+            DirectX::XMStoreFloat4x4(&prevframeCam.proj,     P);
+            DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
+        
+            prevframeCamDataValid = true;
+            return;
+        }
+
+        // Camera Data because FrameBuffer might not be set up yet
+        auto camData = prevframeCam;
+        {
+            // Match FrameBuffer layout (row_major in HLSL): store row-major matrices.
+            // Our camData matrices appear transposed relative to FrameBuffer, so transpose before upload.
+            DirectX::XMMATRIX V  = DirectX::XMLoadFloat4x4(&camData.view);
+            DirectX::XMMATRIX P  = DirectX::XMLoadFloat4x4(&camData.proj);
+            DirectX::XMMATRIX VP = DirectX::XMLoadFloat4x4(&camData.viewProj);
+
+            DirectX::XMStoreFloat4x4(&params.cameraViewMat,     DirectX::XMMatrixTranspose(V));
+            DirectX::XMStoreFloat4x4(&params.cameraProjMat,     DirectX::XMMatrixTranspose(P));
+            DirectX::XMStoreFloat4x4(&params.cameraViewProjMat, DirectX::XMMatrixTranspose(VP));
+
+            if (settings.debugMode) {
+                // Log camera world position
+                logger::info("HiZ Params - CameraWorldPos: [{}, {}, {}]",
+                    params.cameraWorldPos.x, params.cameraWorldPos.y, params.cameraWorldPos.z);
+
+                // Log View matrix (row-major layout)
+                const auto& VM = params.cameraViewMat;
+                logger::info("Frame {}: HiZ Params - ViewMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VM._11, VM._12, VM._13, VM._14);
+                logger::info("Frame {}: HiZ Params - ViewMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VM._21, VM._22, VM._23, VM._24);
+                logger::info("Frame {}: HiZ Params - ViewMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VM._31, VM._32, VM._33, VM._34);
+                logger::info("Frame {}: HiZ Params - ViewMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VM._41, VM._42, VM._43, VM._44);
+
+                // Log Proj matrix
+                const auto& PM = params.cameraProjMat;
+                logger::info("Frame {}: HiZ Params - ProjMat r0: [{}, {}, {}, {}]", globals::state->frameCount, PM._11, PM._12, PM._13, PM._14);
+                logger::info("Frame {}: HiZ Params - ProjMat r1: [{}, {}, {}, {}]", globals::state->frameCount, PM._21, PM._22, PM._23, PM._24);
+                logger::info("Frame {}: HiZ Params - ProjMat r2: [{}, {}, {}, {}]", globals::state->frameCount, PM._31, PM._32, PM._33, PM._34);
+                logger::info("Frame {}: HiZ Params - ProjMat r3: [{}, {}, {}, {}]", globals::state->frameCount, PM._41, PM._42, PM._43, PM._44);
+
+                // Log ViewProj matrix
+                const auto& VPM = params.cameraViewProjMat;
+                logger::info("Frame {}: HiZ Params - ViewProjMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VPM._11, VPM._12, VPM._13, VPM._14);
+                logger::info("Frame {}: HiZ Params - ViewProjMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VPM._21, VPM._22, VPM._23, VPM._24);
+                logger::info("Frame {}: HiZ Params - ViewProjMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VPM._31, VPM._32, VPM._33, VPM._34);
+                logger::info("Frame {}: HiZ Params - ViewProjMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VPM._41, VPM._42, VPM._43, VPM._44);
+
+                // Log View Inverse matrix (row-major, matching FrameBuffer::CameraViewInverse)
+                // We uploaded View as transpose(V), so inverse(View) row-major is transpose(inverse(V))
+                DirectX::XMMATRIX V_inv = DirectX::XMMatrixInverse(nullptr, V);
+                DirectX::XMFLOAT4X4 VInvM;
+                DirectX::XMStoreFloat4x4(&VInvM, DirectX::XMMatrixTranspose(V_inv));
+                logger::info("Frame {}: HiZ Params - ViewInvMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._11, VInvM._12, VInvM._13, VInvM._14);
+                logger::info("Frame {}: HiZ Params - ViewInvMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._21, VInvM._22, VInvM._23, VInvM._24);
+                logger::info("Frame {}: HiZ Params - ViewInvMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._31, VInvM._32, VInvM._33, VInvM._34);
+                logger::info("Frame {}: HiZ Params - ViewInvMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._41, VInvM._42, VInvM._43, VInvM._44);
+            }
+        }
+
+        // Update prevframeCam
+        {
+            auto vd = Util::GetCameraData(0);
+            DirectX::XMMATRIX V = vd.viewMat;
+            DirectX::XMMATRIX P = vd.projMat;
+            DirectX::XMMATRIX VP = DirectX::XMMatrixMultiply(V, P);
+
+            DirectX::XMStoreFloat4x4(&prevframeCam.view,     V);  // row-major copy
+            DirectX::XMStoreFloat4x4(&prevframeCam.proj,     P);
+            DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
+        }
+
+        auto renderer = globals::game::renderer;
+        D3D11_TEXTURE2D_DESC texDesc{};
+        renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture->GetDesc(&texDesc);
+
+        params.bufferDim = { (float)texDesc.Width, (float)texDesc.Height };
+
+        //logger::info("HiZ Params - BufferDim: [{}, {}]", params.bufferDim.x, params.bufferDim.y);
+
+        params.bufferDimInv = { 1.0f / params.bufferDim.x, 1.0f / params.bufferDim.y };
+
+        //logger::info("HiZ Params - BufferDimInv: [{}, {}]", params.bufferDimInv.x, params.bufferDimInv.y);
+
+        if (SUCCEEDED(context->Map(hiZTestParamsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            memcpy(mapped.pData, &params, sizeof(HiZSettings));
+            context->Unmap(hiZTestParamsBuffer, 0);
+        } else {
+            logger::warn("ExecuteVisibilityTests: failed to map hiZTestParamsBuffer");
+            return;
+        }
+
+        // Set up framebuffer
+
+        ID3D11Buffer* buffers[1] = { *globals::game::perFrame.get() };
+
+        ID3D11Buffer* vrBuffer = nullptr;
+
+        if (REL::Module::IsVR()) {
+            static REL::Relocation<ID3D11Buffer**> VRValues{ REL::Offset(0x3180688) };
+            vrBuffer = *VRValues.get();
+        }
+        if (vrBuffer) {
+            context->CSSetConstantBuffers(12, 1, buffers);
+            context->CSSetConstantBuffers(13, 1, &vrBuffer);
+        } else {
+            context->CSSetConstantBuffers(12, 1, buffers);
+        }
+
+        // Set up shared data
+        globals::state->UpdateSharedData(true, false);
+    }
+    
+    // Bind resources and dispatch Hi-Z test compute shader for batch processing
+    {
+        if (settings.enableBoundsViewer) {
+            if (!boundsOverlayTex || boundsOverlayW != hiZWidth || boundsOverlayH != hiZHeight) {
+                ReleaseBoundsOverlayResources();
+                SetupBoundsOverlayResources(hiZWidth, hiZHeight);
+            }
+            ClearBoundsOverlay();
+        }
+
+        const bool overlayEnabled = settings.enableBoundsViewer && (boundsOverlayUAV != nullptr);
+
+        UINT uavCount = overlayEnabled ? 3u : 2u;
+        ID3D11UnorderedAccessView* uavs[3] = {
+            visibilityResultsUAV,
+            (settings.debugMode || settings.enableBoundsViewer) ? debugResultsUAV : nullptr,
+            overlayEnabled ? boundsOverlayUAV : nullptr
+        };
+        context->CSSetUnorderedAccessViews(0, uavCount, uavs, nullptr);
+
+        ID3D11ShaderResourceView* srvs[] = { hiZSRV, geometryBoundsSRV };
+        context->CSSetShaderResources(0, 2, srvs);
+        context->CSSetConstantBuffers(0, 1, &hiZTestParamsBuffer);
+
+        if (hiZSampler) {
+            context->CSSetSamplers(0, 1, &hiZSampler);
+        }
+        context->CSSetShader(hiZTestCS, nullptr, 0);
+
+        // Dispatch for batch processing
+        {
+            const uint32_t threadGroupSize = 256;
+            uint32_t numGroups = (numGeometry + threadGroupSize - 1) / threadGroupSize;
+            // Profile the dispatch to GPU
+            auto startDispatch = std::chrono::high_resolution_clock::now();
+            context->Dispatch(numGroups, 1, 1);
+            auto endDispatch = std::chrono::high_resolution_clock::now();
+            stats.gpuCullingTimeMs = static_cast<float>(
+                std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(endDispatch - startDispatch).count()
+            );
+        }
+
+        // Unbind resources (must pass arrays of nulls)
+        ID3D11ShaderResourceView* nullSRVs_tests[2] = { nullptr, nullptr };
+        context->CSSetShaderResources(0, 2, nullSRVs_tests);
+        ID3D11UnorderedAccessView* nullUAVs_tests[2] = { nullptr, nullptr };
+        context->CSSetUnorderedAccessViews(0, 2, nullUAVs_tests, nullptr);
+        ID3D11SamplerState* nullSamplers_tests[1] = { nullptr };
+        context->CSSetSamplers(0, 1, nullSamplers_tests);
+        context->CSSetShader(nullptr, nullptr, 0);
+    }
+}
+
+void HiZOcclusion::ProcessVisibilityResults() {
+
+    unCullNextFrame.clear();
+
+    const HiZOcclusion::OcclusionResult* visibilityData = static_cast<const HiZOcclusion::OcclusionResult*>(readbackState.mappedData.pData);
+
+    for (uint32_t i = 0; i < numGeometryPending && i < pendingGeometryResults.size(); ++i) {
+        if (!pendingGeometryResults[i]) continue;
+        stats.totalTested++;
+        
+        auto* geo = pendingGeometryResults[i];
+        const auto& result = visibilityData[i];
+        bool currentlyOccluded = (result.objectDepth > result.sceneDepth + settings.conservativeBias);
+        
+        // Get or create temporal state
+        auto& temporal = temporalStates[geo];
+        
+        // Update confidence counters
+        if (currentlyOccluded) {
+            temporal.occludedFrames = std::min<uint8_t>(temporal.occludedFrames + 1, 255);
+            temporal.visibleFrames = 0;
+        } else {
+            temporal.visibleFrames = std::min<uint8_t>(temporal.visibleFrames + 1, 255);
+            temporal.occludedFrames = 0;
         }
         
-        // Apply conservative bias when checking culling decision
-        float conservativeBias = settings.conservativeBias;
-        bool isCulled = (result.objectDepth > (result.sceneDepth + conservativeBias));
-        return isCulled;
+        // Apply hysteresis - different thresholds for hiding vs showing
+        bool shouldHide = (temporal.occludedFrames >= FRAMES_TO_CULL && temporal.wasVisible);
+        bool shouldShow = (temporal.visibleFrames >= FRAMES_TO_UNCULL && !temporal.wasVisible);
+        if (shouldHide) {
+            geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
+            temporal.wasVisible = false;
+            unCullNextFrame.push_back(geo);
+            stats.culled++;
+        } else if (shouldShow) {
+            geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+            temporal.wasVisible = true;
+            stats.visible++;
+        } else {
+            // No state change - keep current visibility
+            if (temporal.wasVisible) {
+                stats.visible++;
+                // If currently occluded but not confident yet, keep testing
+                if (currentlyOccluded) {
+                    unCullNextFrame.push_back(geo);
+                }
+            } else {
+                stats.culled++;
+                unCullNextFrame.push_back(geo);  // Keep testing
+            }
+        }
     }
-
-    // If no result found, don't cull (conservative - render unknown geometry)
-    return false;
 }

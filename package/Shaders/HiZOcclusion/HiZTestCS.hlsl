@@ -199,10 +199,10 @@ float GetMipLevel(float3 centerVS, float radius) {
     // Diameter in pixels
     float screenSizePixels = screenRadiusPixels * 2.0;
     
-    // Mip level based on size
-    float mipLevel = log2(max(1.0, screenSizePixels));
+    // Subtract 1-2 levels to use finer depth resolution
+    float mipLevel = max(0.0, log2(max(1.0, screenSizePixels)) - 1.5);
     
-    return clamp(mipLevel, 0.0, HiZSettings.x);
+    return clamp(mipLevel, 0.0, HiZSettings.x - 1.0);  // Also avoid highest mip
 }
 
 void WriteDebugOutput(int geometryIndex, float3 centerWS, float radius, float3 centerWSCameraRelative, float objDepth, float sceneDepth, uint earlyOutReason) {
@@ -238,17 +238,19 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     int earlyOutReason = 0;  // 0=none, 1=behind_camera, 2=too_far, 3=invalid_radius, 4=invalid_depth
     
     // Check for objects behind camera (object center in negative Z in view space)
+    /*
     if (centerVS.z < 0.0) {
         earlyOutReason = 1;  // Behind camera
         if (overlaySettings.x != 0 && geometryIndex < (uint)overlaySettings.y) {
             DrawBounds(centerVS, radius, earlyOutReason);
         }
-        VisibilityResults[geometryIndex] = float2(-1, 0);
+        VisibilityResults[geometryIndex] = float2(1, 0);
         if (HiZSettings.w == 1) {
             WriteDebugOutput(geometryIndex, centerWS, radius, centerWSCameraRelative, 0.0, 0.0, earlyOutReason);
         }
         return;
     }
+    */
 
     // Check for invalid radius
     if (radius <= 0.0) {
@@ -266,10 +268,8 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     // Check if center is on screen - if not, we'll skip to cardinal point testing
     // instead of early-outing (objects partially visible at screen edges)
     float2 centerUV = FrameBuffer::ViewToUV(centerVS);
-    bool centerOffscreen = FrameBuffer::IsOutsideFrame(centerUV);
-    
-    // Don't early-out for center off-screen - continue to cardinal point testing below
-    
+    bool centerOffscreen = (FrameBuffer::IsOutsideFrame(centerUV) || centerVS.z < 0.0);
+
     // Compute sphere's nearest point
     // The nearest point is along the view direction from center, moved by radius
     float centerDistSq = dot(centerVS, centerVS);
@@ -329,7 +329,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     // Choose appropriate mip based on screen coverage of object bounds
     float mipLevel = GetMipLevel(centerVS, radius);
-    float conservativeBias = HiZSettings.y;  // From settings
+    float conservativeBias = HiZSettings.y * (1.0 + mipLevel * 0.15);  // More conservative at higher mips
     
     // MULTI-POINT OCCLUSION TESTING
     // Test multiple points on the sphere surface to handle partial occlusion
@@ -348,43 +348,57 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
             isVisible = true;
         }
     }
-    
+
     // Phase 2: Test cardinal directions if not already visible
     // This catches objects partially visible at screen edges or behind occluders
     if (!isVisible) {
-        static const float3 cardinalDirs[6] = {
-            float3( 1,  0,  0),  // +X (right)
-            float3(-1,  0,  0),  // -X (left)
-            float3( 0,  1,  0),  // +Y (up)
-            float3( 0, -1,  0),  // -Y (down)
-            float3( 0,  0,  1),  // +Z (forward)
-            float3( 0,  0, -1)   // -Z (backward)
+        // Compute screen-space bounding rectangle of sphere
+        float2 minUV = float2(1e10, 1e10);
+        float2 maxUV = float2(-1e10, -1e10);
+        float minDepth = 1.0;
+
+        // Test 8 corners + 6 face centers (14 points total) for better coverage
+        static const float3 sampleDirs[14] = {
+            // 8 corners of bounding cube
+            float3( 1,  1,  1), float3( 1,  1, -1),
+            float3( 1, -1,  1), float3( 1, -1, -1),
+            float3(-1,  1,  1), float3(-1,  1, -1),
+            float3(-1, -1,  1), float3(-1, -1, -1),
+            // 6 face centers (cardinal directions)
+            float3( 1,  0,  0), float3(-1,  0,  0),
+            float3( 0,  1,  0), float3( 0, -1,  0),
+            float3( 0,  0,  1), float3( 0,  0, -1)
         };
-        
+
+        // Normalize corner vectors
+        static const float cornerScale = 0.577350269;  // 1/sqrt(3) for cube diagonal
+
         [unroll]
-        for (int i = 0; i < 6; i++) {
-            // Calculate surface point in view space
-            float3 surfacePointVS = centerVS + cardinalDirs[i] * radius;
+        for (int i = 0; i < 14; i++) {
+            float3 dir = sampleDirs[i];
+            if (i < 8) dir *= cornerScale;  // Normalize cube corners to unit sphere
             
-            // Skip points behind camera
-            if (surfacePointVS.z < 0.0) continue;
+            float3 pointVS = centerVS + dir * radius;
+            if (pointVS.z < 0.0) continue;  // Behind camera
             
-            // Project to screen space
-            float4 surfaceClip = mul(FrameBuffer::CameraProj[0], float4(surfacePointVS, 1));
-            float surfaceDepth = surfaceClip.z / surfaceClip.w;
-            float2 surfaceUV = FrameBuffer::ViewToUV(surfacePointVS);
+            float4 pointClip = mul(FrameBuffer::CameraProj[0], float4(pointVS, 1));
+            float pointDepth = pointClip.z / pointClip.w;
+            float2 pointUV = FrameBuffer::ViewToUV(pointVS);
             
-            // Skip off-screen points (let frustum culling handle them)
-            if (FrameBuffer::IsOutsideFrame(surfaceUV)) continue;
+            if (FrameBuffer::IsOutsideFrame(pointUV)) continue;
             
-            // Sample Hi-Z at this point
-            float hiZDepthSurface = HiZBuffer.SampleLevel(HiZSampler, surfaceUV, mipLevel).r;
-            minHiZDepth = min(minHiZDepth, hiZDepthSurface);
+            // Track bounding rect
+            minUV = min(minUV, pointUV);
+            maxUV = max(maxUV, pointUV);
+            minDepth = min(minDepth, pointDepth);
             
-            // Check if this point is visible
-            if (surfaceDepth <= (hiZDepthSurface + conservativeBias)) {
+            // Sample Hi-Z and check visibility
+            float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
+            minHiZDepth = min(minHiZDepth, hiZDepth);  // ← ADD THIS LINE
+
+            if (pointDepth <= (hiZDepth + conservativeBias)) {
                 isVisible = true;
-                break;  // Early out - found visible point
+                break;
             }
         }
     }

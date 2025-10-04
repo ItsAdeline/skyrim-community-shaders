@@ -140,6 +140,9 @@ struct HiZOcclusion : OverlayFeature
     void ProcessCulledGeometry(RE::BSGeometry* geometry, uint32_t renderFlags);
     bool SetupGPUCullingResources();
     void PerformGPUCulling();
+
+    void DispatchComputeShader();
+    void ProcessVisibilityResults();
     
     // Get current camera for culling tests
     RE::NiCamera* GetCurrentCamera();
@@ -212,6 +215,10 @@ struct HiZOcclusion : OverlayFeature
         float hiZBuildTimeMs = 0.0f;
         float geometryProcessingTimeMs = 0.0f;
         float readbackTimeMs = 0.0f;
+        float copyTimeMs = 0.0f;
+        float mapTimeMs = 0.0f;
+        float unmapTimeMs = 0.0f;
+        float copyDataTimeMs = 0.0f;
         
         // Performance metrics
         float cullingEfficiency = 0.0f;        // percentage of geometry culled
@@ -231,6 +238,20 @@ struct HiZOcclusion : OverlayFeature
         uint32_t maxHistoryFrames = 60;
     };
     CullingStats stats;
+
+    struct AsyncReadbackState {
+        ID3D11Buffer* stagingBuffer = nullptr;
+        D3D11_MAPPED_SUBRESOURCE mappedData = {};
+        bool hasPendingRead = false;
+        uint32_t pendingFrameIndex = 0;
+    };
+    AsyncReadbackState readbackState;
+    
+    // Shared state for async pipeline
+    uint32_t numGeometry = 0;  // Number of geometry objects in current batch
+    uint32_t numGeometryPending = 0;  // Number of geometry in pending results
+    std::vector<RE::BSGeometry*> pendingGeometrySnapshot;  // Snapshot for current dispatch
+    std::vector<RE::BSGeometry*> pendingGeometryResults;  // Snapshot for async result processing
     
     // Geometry batch for GPU culling
     std::vector<RE::BSGeometry*> pendingGeometry;
@@ -241,17 +262,24 @@ struct HiZOcclusion : OverlayFeature
     // Mapping and per-frame state for result lookup
     std::unordered_map<RE::BSGeometry*, uint32_t> geometryIndexMap;   // geometry -> batch index (current frame pending)
     std::unordered_map<RE::BSGeometry*, OcclusionResult> visibilityResultsMap; // stores all results for debugging
+
+    // Temporal coherence tracking - prevent flickering
+    struct TemporalState {
+        bool wasVisible = true;  // Default visible
+        uint8_t visibleFrames = 0;  // Consecutive frames visible
+        uint8_t occludedFrames = 0;  // Consecutive frames occluded
+    };
+    std::unordered_map<RE::BSGeometry*, TemporalState> temporalStates;
+
+    // Settings for temporal stability
+    const uint8_t FRAMES_TO_CULL = 3;    // Must be occluded 3 frames before hiding
+    const uint8_t FRAMES_TO_UNCULL = 1;  // Must be visible 1 frame to unhide (faster response)
+
     // Previous-frame results used during rendering to avoid feedback/flicker
     std::unordered_map<RE::BSGeometry*, OcclusionResult> visibilityResultsPrev; // stores all results for debugging
     bool batchDispatchedThisFrame = false;                             // guards single dispatch + readback per frame
     uint32_t batchFrame = 0;                                           // frame index that pendingGeometry belongs to
 
-    // Simple integration point - called from State::Draw()
-    bool ShouldCullGeometry(RE::BSGeometry* geometry);
-    
-    // Query if geometry was culled by Hi-Z (call during rendering)
-    bool IsGeometryCulled(RE::BSGeometry* geometry) const;
-    
     void ExecuteVisibilityTests();
 
     struct HiZSettings {
