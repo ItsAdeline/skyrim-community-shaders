@@ -142,7 +142,7 @@ struct HiZOcclusion : OverlayFeature
     void PerformGPUCulling();
 
     void DispatchComputeShader();
-    void ProcessVisibilityResults();
+    void ProcessVisibilityResults(uint32_t bufferIndex);
     
     // Get current camera for culling tests
     RE::NiCamera* GetCurrentCamera();
@@ -240,10 +240,16 @@ struct HiZOcclusion : OverlayFeature
     CullingStats stats;
 
     struct AsyncReadbackState {
-        ID3D11Buffer* stagingBuffer = nullptr;
-        D3D11_MAPPED_SUBRESOURCE mappedData = {};
-        bool hasPendingRead = false;
-        uint32_t pendingFrameIndex = 0;
+        static const int BUFFER_COUNT = 3;  // Triple buffering to handle GPU latency
+        ID3D11Buffer* stagingBuffers[BUFFER_COUNT] = {};
+        D3D11_MAPPED_SUBRESOURCE mappedData[BUFFER_COUNT] = {};
+        bool hasPendingRead[BUFFER_COUNT] = {};
+        uint32_t pendingFrameIndex[BUFFER_COUNT] = {};
+        std::vector<RE::BSGeometry*> geometrySnapshots[BUFFER_COUNT];  // Geometry tested in each buffer
+        uint32_t geometryCount[BUFFER_COUNT] = {};  // Number of geometry in each buffer
+        uint32_t writeIndex = 0;  // Next buffer to write GPU results to
+        uint32_t readIndex = 0;   // Next buffer to try reading from
+        uint32_t numPendingReads = 0;  // Track how many buffers have pending reads
     };
     AsyncReadbackState readbackState;
     

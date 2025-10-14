@@ -937,7 +937,7 @@ bool HiZOcclusion::SetupGPUCullingResources()
         return false;
     }
     
-    // Create staging buffer for readback
+    // Create triple-buffered staging buffers for async readback
     D3D11_BUFFER_DESC readbackDesc = {};
     readbackDesc.ByteWidth = maxGeometryCount * sizeof(OcclusionResult);
     readbackDesc.Usage = D3D11_USAGE_STAGING;
@@ -946,11 +946,26 @@ bool HiZOcclusion::SetupGPUCullingResources()
     readbackDesc.StructureByteStride = 0;
     readbackDesc.MiscFlags = 0;
 
-    HRESULT rbhr = device->CreateBuffer(&readbackDesc, nullptr, &readbackState.stagingBuffer);
-    if (FAILED(rbhr)) {
-        logger::error("Failed to create visibility readback buffer");
-        return false;
+    for (int i = 0; i < AsyncReadbackState::BUFFER_COUNT; ++i) {
+        HRESULT rbhr = device->CreateBuffer(&readbackDesc, nullptr, &readbackState.stagingBuffers[i]);
+        if (FAILED(rbhr)) {
+            logger::error("Failed to create visibility readback buffer {}", i);
+            // Clean up any buffers we created
+            for (int j = 0; j < i; ++j) {
+                if (readbackState.stagingBuffers[j]) {
+                    readbackState.stagingBuffers[j]->Release();
+                    readbackState.stagingBuffers[j] = nullptr;
+                }
+            }
+            return false;
+        }
+        readbackState.hasPendingRead[i] = false;
+        readbackState.pendingFrameIndex[i] = 0;
     }
+    readbackState.writeIndex = 0;
+    readbackState.readIndex = 0;
+    readbackState.numPendingReads = 0;
+    logger::info("Created {} staging buffers for triple-buffered readback", AsyncReadbackState::BUFFER_COUNT);
 
     // Create sampler for Hi-Z sampling
     D3D11_SAMPLER_DESC sampDesc = {};
@@ -1052,55 +1067,134 @@ void HiZOcclusion::ExecuteVisibilityTests()
     visibilityResultsCPU.clear();
 
     // Check if we have geometry from previous frame to process
-    if (pendingGeometry.empty()) {
-        logger::debug("ExecuteVisibilityTests: No geometry to test (pending={})", 
-                     pendingGeometry.size());
+    if (pendingGeometry.empty() && readbackState.numPendingReads == 0) {
+        logger::debug("ExecuteVisibilityTests: No geometry to test and no pending results");
         return;
     }
 
-    numGeometry = static_cast<uint32_t>(pendingGeometry.size());
-
-    pendingGeometrySnapshot = pendingGeometry;
-
-    // Create the worldBound array for the remaining geometry
-    geometryBounds.clear();
-    geometryBounds.resize(numGeometry);
-    for (uint32_t i = 0; i < numGeometry; i++) {
-        if (!pendingGeometry[i]) // remove nullptrs
-            continue;
-        auto& worldBound = pendingGeometry[i]->worldBound;
-
-        geometryBounds[i] = DirectX::XMFLOAT4(worldBound.center.x, worldBound.center.y, worldBound.center.z, worldBound.radius);
-    }
-
-    logger::debug("ExecuteVisibilityTests: Processing {} geometry objects from frame {}", geometryBounds.size(), globals::state->frameCount - 1);
-
-    // Result readback operation
+    // Try to read results from any pending staging buffers (multi-buffered approach)
     {
-        // Check if we have our mapped results
-        if (readbackState.hasPendingRead) {
-            HRESULT hr = context->Map(readbackState.stagingBuffer, 0, 
-                D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, 
-                &readbackState.mappedData);
-            if (SUCCEEDED(hr)) {
-                ProcessVisibilityResults();
-                context->Unmap(readbackState.stagingBuffer, 0);
-                readbackState.hasPendingRead = false;
+        auto readStart = std::chrono::high_resolution_clock::now();
+        
+        // Try to read from all pending buffers (oldest first)
+        uint32_t attemptsToRead = readbackState.numPendingReads;
+        for (uint32_t attempt = 0; attempt < attemptsToRead && readbackState.numPendingReads > 0; ++attempt) {
+            uint32_t bufferIdx = readbackState.readIndex;
+            
+            if (readbackState.hasPendingRead[bufferIdx]) {
+                auto mapStart = std::chrono::high_resolution_clock::now();
+                
+                HRESULT hr = context->Map(readbackState.stagingBuffers[bufferIdx], 0, 
+                    D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, 
+                    &readbackState.mappedData[bufferIdx]);
+                
+                auto mapEnd = std::chrono::high_resolution_clock::now();
+                stats.mapTimeMs = static_cast<float>(std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(mapEnd - mapStart).count());
+                
+                if (SUCCEEDED(hr)) {
+                    auto copyStart = std::chrono::high_resolution_clock::now();
+                    
+                    // Successfully mapped - process results using the geometry snapshot from this buffer
+                    ProcessVisibilityResults(bufferIdx);
+                    
+                    auto copyEnd = std::chrono::high_resolution_clock::now();
+                    stats.copyDataTimeMs = static_cast<float>(std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(copyEnd - copyStart).count());
+                    
+                    auto unmapStart = std::chrono::high_resolution_clock::now();
+                    context->Unmap(readbackState.stagingBuffers[bufferIdx], 0);
+                    auto unmapEnd = std::chrono::high_resolution_clock::now();
+                    stats.unmapTimeMs = static_cast<float>(std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(unmapEnd - unmapStart).count());
+                    
+                    // Mark buffer as free
+                    readbackState.hasPendingRead[bufferIdx] = false;
+                    readbackState.numPendingReads--;
+                    
+                    uint32_t latency = globals::state->frameCount - readbackState.pendingFrameIndex[bufferIdx];
+                    if (settings.debugMode) {
+                        logger::info("Successfully read results from buffer {} (frame {} -> {}, latency = {} frames)",
+                                    bufferIdx, readbackState.pendingFrameIndex[bufferIdx], 
+                                    globals::state->frameCount, latency);
+                    }
+                    
+                    // Advance read index for next frame
+                    readbackState.readIndex = (readbackState.readIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
+                    break;  // Successfully processed one buffer, don't read more this frame
+                } else {
+                    // GPU not done yet - try next buffer in ring
+                    readbackState.readIndex = (readbackState.readIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
+                    if (settings.debugMode && attempt == 0) {
+                        logger::debug("Buffer {} not ready (frame {}), will retry next frame",
+                                     bufferIdx, readbackState.pendingFrameIndex[bufferIdx]);
+                    }
+                }
+            } else {
+                // This buffer has no pending read, advance
+                readbackState.readIndex = (readbackState.readIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
             }
         }
+        
+        auto readEnd = std::chrono::high_resolution_clock::now();
+        stats.readbackTimeMs = static_cast<float>(std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(readEnd - readStart).count());
+    }
 
-        pendingGeometryResults = pendingGeometrySnapshot;
-        numGeometryPending = numGeometry;
+    // Dispatch new test if we have geometry to process
+    if (!pendingGeometry.empty()) {
+        numGeometry = static_cast<uint32_t>(pendingGeometry.size());
+        pendingGeometrySnapshot = pendingGeometry;
+
+        // Create the worldBound array for the remaining geometry
+        geometryBounds.clear();
+        geometryBounds.resize(numGeometry);
+        for (uint32_t i = 0; i < numGeometry; i++) {
+            if (!pendingGeometry[i]) // remove nullptrs
+                continue;
+            auto& worldBound = pendingGeometry[i]->worldBound;
+
+            geometryBounds[i] = DirectX::XMFLOAT4(worldBound.center.x, worldBound.center.y, worldBound.center.z, worldBound.radius);
+        }
+
+        logger::debug("ExecuteVisibilityTests: Processing {} geometry objects from frame {}", geometryBounds.size(), globals::state->frameCount - 1);
 
         // Execute HiZ Tests for this frame
         DispatchComputeShader();
 
-        // Copy current frame results to readback staging buffer
-        context->CopyResource(readbackState.stagingBuffer, visibilityResultsBuffer);
+        // Check if we have a free staging buffer
+        if (readbackState.numPendingReads >= AsyncReadbackState::BUFFER_COUNT) {
+            logger::warn("All {} staging buffers are full! GPU readback is severely delayed. Skipping oldest buffer.",
+                        AsyncReadbackState::BUFFER_COUNT);
+            // Force-free the oldest buffer (readIndex points to it)
+            uint32_t oldestIdx = readbackState.readIndex;
+            if (readbackState.hasPendingRead[oldestIdx]) {
+                readbackState.hasPendingRead[oldestIdx] = false;
+                readbackState.numPendingReads--;
+                readbackState.readIndex = (readbackState.readIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
+            }
+        }
 
-        // Set pending read state
-        readbackState.hasPendingRead = true;
-        readbackState.pendingFrameIndex = globals::state->frameCount;
+        // Copy current frame results to next available staging buffer
+        uint32_t writeIdx = readbackState.writeIndex;
+        
+        auto copyStart = std::chrono::high_resolution_clock::now();
+        context->CopyResource(readbackState.stagingBuffers[writeIdx], visibilityResultsBuffer);
+        auto copyEnd = std::chrono::high_resolution_clock::now();
+        stats.copyTimeMs = static_cast<float>(std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(copyEnd - copyStart).count());
+
+        // Store geometry snapshot WITH this buffer so results match when read back
+        readbackState.geometrySnapshots[writeIdx] = pendingGeometrySnapshot;
+        readbackState.geometryCount[writeIdx] = numGeometry;
+        
+        // Mark buffer as pending
+        readbackState.hasPendingRead[writeIdx] = true;
+        readbackState.pendingFrameIndex[writeIdx] = globals::state->frameCount;
+        readbackState.numPendingReads++;
+        
+        // Advance write index for next frame
+        readbackState.writeIndex = (readbackState.writeIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
+        
+        if (settings.debugMode) {
+            logger::info("Dispatched HiZ test for frame {} to buffer {} ({} pending)",
+                        globals::state->frameCount, writeIdx, readbackState.numPendingReads);
+        }
 
         // Update statistics
         stats.frameIndex = globals::state->frameCount;
@@ -1566,17 +1660,27 @@ void HiZOcclusion::DispatchComputeShader() {
     }
 }
 
-void HiZOcclusion::ProcessVisibilityResults() {
+void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
 
     unCullNextFrame.clear();
 
-    const HiZOcclusion::OcclusionResult* visibilityData = static_cast<const HiZOcclusion::OcclusionResult*>(readbackState.mappedData.pData);
+    // Read from the correct triple-buffered staging buffer
+    const HiZOcclusion::OcclusionResult* visibilityData = static_cast<const HiZOcclusion::OcclusionResult*>(readbackState.mappedData[bufferIndex].pData);
+    
+    // Use the geometry snapshot that was stored with this buffer
+    const auto& geometrySnapshot = readbackState.geometrySnapshots[bufferIndex];
+    const uint32_t geometryCount = readbackState.geometryCount[bufferIndex];
+    
+    if (settings.debugMode) {
+        logger::info("Processing {} results from buffer {} (frame {})",
+                    geometryCount, bufferIndex, readbackState.pendingFrameIndex[bufferIndex]);
+    }
 
-    for (uint32_t i = 0; i < numGeometryPending && i < pendingGeometryResults.size(); ++i) {
-        if (!pendingGeometryResults[i]) continue;
+    for (uint32_t i = 0; i < geometryCount && i < geometrySnapshot.size(); ++i) {
+        if (!geometrySnapshot[i]) continue;
         stats.totalTested++;
         
-        auto* geo = pendingGeometryResults[i];
+        auto* geo = geometrySnapshot[i];
         const auto& result = visibilityData[i];
         bool currentlyOccluded = (result.objectDepth > result.sceneDepth + settings.conservativeBias);
         
