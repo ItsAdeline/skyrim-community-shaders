@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <DirectXMath.h>
 #include <RE/N/NiBound.h>
+#include "Features/Upscaling.h"
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
     HiZOcclusion::Settings,
@@ -596,8 +597,23 @@ bool HiZOcclusion::InitHiZResources()
 		return false;
 	}
 
-    uint32_t desiredW = depthDesc.Width;
-    uint32_t desiredH = depthDesc.Height;
+    uint32_t desiredW;
+    uint32_t desiredH;
+
+    if (globals::features::upscaling.loaded && globals::features::upscaling.IsUpscalingActive()) {
+        uint32_t displayW = static_cast<uint32_t>(globals::state->screenSize.x);
+        uint32_t displayH = static_cast<uint32_t>(globals::state->screenSize.y);
+        desiredW = static_cast<uint32_t>(displayW * globals::features::upscaling.dynamicResolutionWidthRatio);
+        desiredH = static_cast<uint32_t>(displayH * globals::features::upscaling.dynamicResolutionHeightRatio);
+        // Ensure dimensions are at least 1
+        desiredW = std::max(1u, desiredW);
+        desiredH = std::max(1u, desiredH);
+        logger::info("HiZOcclusion: Upscaling active. Using scaled resolution: {}x{}", desiredW, desiredH);
+    } else {
+        desiredW = depthDesc.Width;
+        desiredH = depthDesc.Height;
+        logger::info("HiZOcclusion: Upscaling inactive. Using depth buffer resolution: {}x{}", desiredW, desiredH);
+    }
 
     // Build Hi-Z pyramid from previous frame depth buffer
     // Ensure Hi-Z texture exists and matches current depth dimensions
