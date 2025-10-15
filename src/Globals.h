@@ -40,6 +40,7 @@ struct Skin;
 class State;
 class Deferred;
 struct TruePBR;
+class RenderDoc;
 class Menu;
 
 namespace SIE
@@ -94,6 +95,7 @@ namespace globals
 		extern Upscaling upscaling;
 		extern PostProcessing postProcessing;
 		extern Skin skin;
+		extern RenderDoc renderDoc;
 
 		namespace llf
 		{

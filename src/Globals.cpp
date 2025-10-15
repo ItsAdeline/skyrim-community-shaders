@@ -18,6 +18,7 @@
 #include "Features/PerformanceOverlay.h"
 #include "Features/PhysicalSky.h"
 #include "Features/PostProcessing.h"
+#include "Features/RenderDoc.h"
 #include "Features/ScreenSpaceGI.h"
 #include "Features/ScreenSpacePointLightShadows.h"
 #include "Features/ScreenSpaceReflections.h"
@@ -40,9 +41,8 @@
 #include "Menu.h"
 #include "ShaderCache.h"
 #include "State.h"
-#include "Utils/Game.h"
-
 #include "TruePBR.h"
+#include "Utils/Game.h"
 
 namespace globals
 {
@@ -91,6 +91,7 @@ namespace globals
 		Upscaling upscaling{};
 		PostProcessing postProcessing{};
 		Skin skin{};
+		RenderDoc renderDoc{};
 
 		namespace llf
 		{
