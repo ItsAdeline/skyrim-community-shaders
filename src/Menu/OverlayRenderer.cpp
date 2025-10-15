@@ -93,7 +93,7 @@ bool OverlayRenderer::ShouldSkipRendering()
 			 Menu::GetSingleton()->IsEnabled ||
 			 abTestingManager->IsEnabled() ||
 			 (failed && !hide) ||
-			 anyOverlayVisible);
+			 anyOverlayVisible ||
 			 globals::features::performanceOverlay.settings.ShowInOverlay ||
 			 renderDoc->IsAvailable());
 }

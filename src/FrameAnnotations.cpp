@@ -925,8 +925,6 @@ namespace FrameAnnotations
 		if (globals::game::isVR) {
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISCopyDepthBuffer>>(
 				RE::VTABLE_BSImagespaceShaderCopyDepthBuffer[3]);
-			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISCopyDepthBuffer_DR>>(
-				RE::VTABLE_BSImagespaceShaderCopyDepthBuffer_DR[3]);
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISDownsampleHierarchicalDepthBufferCS>>(
 				RE::VTABLE_BSImagespaceShaderISDownsampleHierarchicalDepthBufferCS[3]);
 			stl::write_vfunc<0x1, BSImagespaceShader_Render<RE::ImageSpaceManager::ISDiffScaleDownsampleDepthBufferCS>>(
@@ -954,8 +952,6 @@ namespace FrameAnnotations
 
 			stl::write_vfunc<0xC, BSImagespaceShader_Dispatch<RE::ImageSpaceManager::ISCopyDepthBuffer>>(
 				RE::VTABLE_BSImagespaceShaderCopyDepthBuffer[0]);
-			stl::write_vfunc<0xC, BSImagespaceShader_Dispatch<RE::ImageSpaceManager::ISCopyDepthBuffer_DR>>(
-				RE::VTABLE_BSImagespaceShaderCopyDepthBuffer_DR[0]);
 			stl::write_vfunc<0xC, BSImagespaceShader_Dispatch<RE::ImageSpaceManager::ISDownsampleHierarchicalDepthBufferCS>>(
 				RE::VTABLE_BSImagespaceShaderISDownsampleHierarchicalDepthBufferCS[0]);
 			stl::write_vfunc<0xC, BSImagespaceShader_Dispatch<RE::ImageSpaceManager::ISDiffScaleDownsampleDepthBufferCS>>(

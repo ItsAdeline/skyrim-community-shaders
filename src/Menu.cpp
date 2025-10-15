@@ -358,6 +358,7 @@ void Menu::Init()
 	float fontSize = ThemeManager::ResolveFontSize(*this);
 
 	auto fontPath = Util::PathHelpers::GetFontsPath() / "Jost-Regular.ttf";
+	ImFontConfig font_config;
 	if (!imgui_io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(),
 			std::round(fontSize), &font_config)) {
 		logger::warn("Menu::Init() - Failed to load custom font. Using default font.");
