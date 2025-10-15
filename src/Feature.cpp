@@ -9,6 +9,7 @@
 #include "Features/GrassCollision.h"
 #include "Features/GrassLighting.h"
 #include "Features/HairSpecular.h"
+#include "Features/HiZOcclusion.h"
 #include "Features/IBL.h"
 #include "Features/InteriorSun.h"
 #include "Features/InverseSquareLighting.h"
@@ -239,7 +240,8 @@ const std::vector<Feature*>& Feature::GetFeatureList()
 		&globals::features::linearLighting,
 		&globals::features::physicalSky,
 		&globals::features::postProcessing,
-		&globals::features::skin
+		&globals::features::skin,
+		&globals::features::hiZOcclusion
 	};
 
 	if (REL::Module::IsVR()) {
