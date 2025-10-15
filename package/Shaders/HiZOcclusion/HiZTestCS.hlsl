@@ -236,21 +236,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     // Early validation: Check for invalid bounds
     int earlyOutReason = 0;  // 0=none, 1=behind_camera, 2=too_far, 3=invalid_radius, 4=invalid_depth
-    
-    // Check for objects behind camera (object center in negative Z in view space)
-    /*
-    if (centerVS.z < 0.0) {
-        earlyOutReason = 1;  // Behind camera
-        if (overlaySettings.x != 0 && geometryIndex < (uint)overlaySettings.y) {
-            DrawBounds(centerVS, radius, earlyOutReason);
-        }
-        VisibilityResults[geometryIndex] = float2(1, 0);
-        if (HiZSettings.w == 1) {
-            WriteDebugOutput(geometryIndex, centerWS, radius, centerWSCameraRelative, 0.0, 0.0, earlyOutReason);
-        }
-        return;
-    }
-    */
 
     // Check for invalid radius
     if (radius <= 0.0) {
@@ -265,62 +250,17 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
     }
 
-    // Check if center is on screen - if not, we'll skip to cardinal point testing
-    // instead of early-outing (objects partially visible at screen edges)
-    float2 centerUV = FrameBuffer::ViewToUV(centerVS);
-    bool centerOffscreen = (FrameBuffer::IsOutsideFrame(centerUV) || centerVS.z < 0.0);
-
     // Compute sphere's nearest point
-    // The nearest point is along the view direction from center, moved by radius
     float centerDistSq = dot(centerVS, centerVS);
     float3 viewDir = centerVS * rsqrt(max(centerDistSq, 1e-12));  // Normalize direction to center
     
-    // Move from center toward camera by radius to get nearest point
     float centerDist = sqrt(centerDistSq);
-    // If closest point is behind camera, do not cull because it might intersect with camera
     if (centerDist < radius) {
-        earlyOutReason = 4;  // Invalid nearest point
+        earlyOutReason = 4;  // Camera inside sphere
         if (overlaySettings.x != 0 && geometryIndex < (uint)overlaySettings.y) {
             DrawBounds(centerVS, radius, earlyOutReason);
         }
-        VisibilityResults[geometryIndex] = float2(-4, 0);
-        if (HiZSettings.w == 1) {
-            WriteDebugOutput(geometryIndex, centerWS, radius, centerWSCameraRelative, 0.0, 0.0, earlyOutReason);
-        }
-        return;
-    }
-    float nearestDist = centerDist - radius;
-    float3 nearestPointVS = viewDir * nearestDist;
-    
-    // Project nearest point to get its depth
-    float4 npClip = mul(FrameBuffer::CameraProj[0], float4(nearestPointVS, 1));
-    float nearestPointCenterDepth = npClip.z / npClip.w;
-
-    // Check for invalid depth values
-    if (nearestPointCenterDepth < 0.0 || nearestPointCenterDepth > 1.0) {
-        earlyOutReason = 5;  // Invalid depth
-        if (overlaySettings.x != 0 && geometryIndex < (uint)overlaySettings.y) {
-            DrawBounds(centerVS, radius, earlyOutReason);
-        }
-        VisibilityResults[geometryIndex] = float2(-5, 0);
-        if (HiZSettings.w == 1) {
-            WriteDebugOutput(geometryIndex, centerWS, radius, centerWSCameraRelative, 0.0, 0.0, earlyOutReason);
-        }
-        return;
-    }
-
-    // Compare nearest point depth to camera depth at same UV
-    // Convert nearest point to UV coordinates
-    float2 nearestPointUV = FrameBuffer::ViewToUV(nearestPointVS);
-
-    // Check if nearest point is off-screen
-    if (FrameBuffer::IsOutsideFrame(nearestPointUV)) {
-        // Off-screen objects are not occluded (let frustum culling handle them)
-        earlyOutReason = 6;  // Off-screen
-        if (overlaySettings.x != 0 && geometryIndex < (uint)overlaySettings.y) {
-            DrawBounds(centerVS, radius, earlyOutReason);
-        }
-        VisibilityResults[geometryIndex] = float2(-6, 0);
+        VisibilityResults[geometryIndex] = float2(-4, 0); // Not culled
         if (HiZSettings.w == 1) {
             WriteDebugOutput(geometryIndex, centerWS, radius, centerWSCameraRelative, 0.0, 0.0, earlyOutReason);
         }
@@ -329,89 +269,140 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     // Choose appropriate mip based on screen coverage of object bounds
     float mipLevel = GetMipLevel(centerVS, radius);
-    float conservativeBias = HiZSettings.y * (1.0 + mipLevel * 0.15);  // More conservative at higher mips
-    
-    // MULTI-POINT OCCLUSION TESTING
-    // Test multiple points on the sphere surface to handle partial occlusion
-    // Industry best practice: test nearest point + cardinal directions
-    
+    float conservativeBias = HiZSettings.y * (1.0 + mipLevel * 0.15);
+
     bool isVisible = false;
-    float minHiZDepth = 1.0;  // Track minimum sampled depth for debugging
-    
-    // Phase 1: Test nearest point ONLY if center is on screen (fast path for fully occluded objects)
-    // If center is off-screen, skip directly to cardinal testing to catch partially visible objects
-    if (!centerOffscreen) {
-        float hiZDepthNearest = HiZBuffer.SampleLevel(HiZSampler, nearestPointUV, mipLevel).r;
-        minHiZDepth = min(minHiZDepth, hiZDepthNearest);
-        
-        if (nearestPointCenterDepth <= (hiZDepthNearest + conservativeBias)) {
-            isVisible = true;
-        }
-    }
+    bool anyPointOnScreen = false;
+    float minHiZDepth = 1.0;
+    float nearestPointCenterDepth = 0.0;
 
-    // Phase 2: Test cardinal directions if not already visible
-    // This catches objects partially visible at screen edges or behind occluders
-    if (!isVisible) {
-        // Compute screen-space bounding rectangle of sphere
-        float2 minUV = float2(1e10, 1e10);
-        float2 maxUV = float2(-1e10, -1e10);
-        float minDepth = 1.0;
+    // 1. Test nearest point
+    float nearestDist = centerDist - radius;
+    float3 nearestPointVS = viewDir * nearestDist;
+    float4 npClip = mul(FrameBuffer::CameraProj[0], float4(nearestPointVS, 1));
+    nearestPointCenterDepth = npClip.z / npClip.w;
 
-        // Test 8 corners + 6 face centers (14 points total) for better coverage
-        static const float3 sampleDirs[14] = {
-            // 8 corners of bounding cube
-            float3( 1,  1,  1), float3( 1,  1, -1),
-            float3( 1, -1,  1), float3( 1, -1, -1),
-            float3(-1,  1,  1), float3(-1,  1, -1),
-            float3(-1, -1,  1), float3(-1, -1, -1),
-            // 6 face centers (cardinal directions)
-            float3( 1,  0,  0), float3(-1,  0,  0),
-            float3( 0,  1,  0), float3( 0, -1,  0),
-            float3( 0,  0,  1), float3( 0,  0, -1)
-        };
-
-        // Normalize corner vectors
-        static const float cornerScale = 0.577350269;  // 1/sqrt(3) for cube diagonal
-
-        [unroll]
-        for (int i = 0; i < 14; i++) {
-            float3 dir = sampleDirs[i];
-            if (i < 8) dir *= cornerScale;  // Normalize cube corners to unit sphere
-            
-            float3 pointVS = centerVS + dir * radius;
-            if (pointVS.z < 0.0) continue;  // Behind camera
-            
-            float4 pointClip = mul(FrameBuffer::CameraProj[0], float4(pointVS, 1));
-            float pointDepth = pointClip.z / pointClip.w;
-            float2 pointUV = FrameBuffer::ViewToUV(pointVS);
-            
-            if (FrameBuffer::IsOutsideFrame(pointUV)) continue;
-            
-            // Track bounding rect
-            minUV = min(minUV, pointUV);
-            maxUV = max(maxUV, pointUV);
-            minDepth = min(minDepth, pointDepth);
-            
-            // Sample Hi-Z and check visibility
-            float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
-            minHiZDepth = min(minHiZDepth, hiZDepth);  // ← ADD THIS LINE
-
-            if (pointDepth <= (hiZDepth + conservativeBias)) {
+    if (nearestPointCenterDepth >= 0.0 && nearestPointCenterDepth <= 1.0) {
+        float2 nearestPointUV = FrameBuffer::ViewToUV(nearestPointVS);
+        if (!FrameBuffer::IsOutsideFrame(nearestPointUV)) {
+            anyPointOnScreen = true;
+            float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, nearestPointUV, mipLevel).r;
+            minHiZDepth = min(minHiZDepth, hiZDepth);
+            if (nearestPointCenterDepth <= (hiZDepth + conservativeBias)) {
                 isVisible = true;
-                break;
             }
         }
     }
+
+    // 2. Test cardinal points
+    if (!isVisible) {
+        static const float3 cardinals[] = {
+            float3(1, 0, 0), float3(-1, 0, 0),
+            float3(0, 1, 0), float3(0, -1, 0),
+            float3(0, 0, 1), float3(0, 0, -1)
+        };
+
+        [unroll]
+        for (int i = 0; i < 6; ++i) {
+            float3 pointVS = centerVS + cardinals[i] * radius;
+            if (pointVS.z < 0) continue;
+
+            float4 pointClip = mul(FrameBuffer::CameraProj[0], float4(pointVS, 1));
+            float pointDepth = pointClip.z / pointClip.w;
+            
+            if (pointDepth >= 0.0 && pointDepth <= 1.0) {
+                float2 pointUV = FrameBuffer::ViewToUV(pointVS);
+                if (!FrameBuffer::IsOutsideFrame(pointUV)) {
+                    anyPointOnScreen = true;
+                    float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
+                    minHiZDepth = min(minHiZDepth, hiZDepth);
+                    if (pointDepth <= (hiZDepth + conservativeBias)) {
+                        isVisible = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Test cardinal points offset by radius towards cam
+    if (!isVisible) {
+        static const float3 cardinals[] = {
+            float3(1, 0, 0), float3(-1, 0, 0),
+            float3(0, 1, 0), float3(0, -1, 0),
+            float3(0, 0, 1), float3(0, 0, -1)
+        };
+
+        [unroll]
+        for (int i = 0; i < 6; ++i) {
+            float3 pointVS = centerVS + cardinals[i] * radius - viewDir * radius;
+            if (pointVS.z < 0) continue;
+
+            float4 pointClip = mul(FrameBuffer::CameraProj[0], float4(pointVS, 1));
+            float pointDepth = pointClip.z / pointClip.w;
+
+            if (pointDepth >= 0.0 && pointDepth <= 1.0) {
+                float2 pointUV = FrameBuffer::ViewToUV(pointVS);
+                if (!FrameBuffer::IsOutsideFrame(pointUV)) {
+                    anyPointOnScreen = true;
+                    float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
+                    minHiZDepth = min(minHiZDepth, hiZDepth);
+                    if (pointDepth <= (hiZDepth + conservativeBias)) {
+                        isVisible = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Test bounding box corners
+    if (!isVisible) {
+        static const float3 corners[] = {
+            float3(1, 1, 1), float3(1, 1, -1),
+            float3(1, -1, 1), float3(1, -1, -1),
+            float3(-1, 1, 1), float3(-1, 1, -1),
+            float3(-1, -1, 1), float3(-1, -1, -1)
+        };
+        static const float cornerScale = 0.577350269; // 1/sqrt(3)
+
+        [unroll]
+        for (int i = 0; i < 8; ++i) {
+            float3 pointVS = centerVS + corners[i] * radius * cornerScale;
+            if (pointVS.z < 0) continue;
+
+            float4 pointClip = mul(FrameBuffer::CameraProj[0], float4(pointVS, 1));
+            float pointDepth = pointClip.z / pointClip.w;
+
+            if (pointDepth >= 0.0 && pointDepth <= 1.0) {
+                float2 pointUV = FrameBuffer::ViewToUV(pointVS);
+                if (!FrameBuffer::IsOutsideFrame(pointUV)) {
+                    anyPointOnScreen = true;
+                    float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
+                    minHiZDepth = min(minHiZDepth, hiZDepth);
+                    if (pointDepth <= (hiZDepth + conservativeBias)) {
+                        isVisible = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Final culling decision
+    bool isOccluded = anyPointOnScreen && !isVisible;
     
-    // Final occlusion decision
-    bool isOccluded = !isVisible;
     float sphereDepth = nearestPointCenterDepth;
-    float hiZDepth = minHiZDepth;  // Use minimum sampled depth for stats
+    float hiZDepth = minHiZDepth;
 
-    // Write result
-    VisibilityResults[geometryIndex] = float2(sphereDepth, hiZDepth);
-
-    earlyOutReason = isOccluded ? -1 : 0;
+    if (isOccluded) {
+        VisibilityResults[geometryIndex] = float2(sphereDepth, hiZDepth);
+        earlyOutReason = -1;
+    } else {
+        // Not occluded, or no points on screen
+        VisibilityResults[geometryIndex] = float2(0, 1);
+        earlyOutReason = 0;
+    }
 
     // Draw bounds if overlay enabled
     if (overlaySettings.x != 0 && geometryIndex < (uint)overlaySettings.y) {

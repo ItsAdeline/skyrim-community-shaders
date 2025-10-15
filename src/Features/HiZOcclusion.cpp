@@ -30,7 +30,13 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
     showInvalidDepth,
     showNearestOffscreen,
     showVisible,
-    showOccluded
+    showOccluded,
+    framesToCull,
+    framesToUncull,
+    temporalStabilityFactor,
+    minCullRadius,
+    minHiZMipLevel,
+    depthStencilTargetIndex
 )
 
 namespace
@@ -248,10 +254,86 @@ void HiZOcclusion::DrawSettings()
     
     // Hi-Z Culling Settings
     if (ImGui::TreeNodeEx("Hi-Z Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool prevEnableHiZCulling = settings.enableHiZCulling;
         if (ImGui::Checkbox("Enable Hi-Z Culling", &settings.enableHiZCulling)) {
             logger::info("Hi-Z culling toggled: {}", settings.enableHiZCulling);
+            if (!settings.enableHiZCulling && prevEnableHiZCulling) {
+                // If culling is disabled, release all resources immediately
+                ReleaseAllResources();
+            }
         }
         ImGui::SliderFloat("Conservative Bias", &settings.conservativeBias, -1.0f, 1.0f, "%.3f");
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            Util::DrawMultiLineTooltip({
+                "Adjusts the depth bias for occlusion testing.",
+                "Positive values make culling more conservative (less aggressive, less pop-in).",
+                "Negative values make culling more aggressive (more objects culled, more pop-in)."
+            });
+        }
+
+        ImGui::SliderInt("Frames to Cull", reinterpret_cast<int*>(&settings.framesToCull), 1, 10);
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            Util::DrawMultiLineTooltip({
+                "Number of consecutive frames an object must be occluded before it is hidden.",
+                "Higher values reduce pop-in but may keep occluded objects visible longer."
+            });
+        }
+
+        ImGui::SliderInt("Frames to Uncull", reinterpret_cast<int*>(&settings.framesToUncull), 1, 10);
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            Util::DrawMultiLineTooltip({
+                "Number of consecutive frames an object must be visible before it is shown.",
+                "Higher values can prevent flickering but may delay objects appearing."
+            });
+        }
+
+        ImGui::SliderFloat("Temporal Stability", &settings.temporalStabilityFactor, 0.0f, 0.99f, "%.2f");
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            Util::DrawMultiLineTooltip({
+                "Controls how quickly an object's visibility state changes.",
+                "Higher values (closer to 1.0) increase stability, reducing flickering but potentially increasing pop-in.",
+                "Lower values (closer to 0.0) make visibility changes more immediate."
+            });
+        }
+
+        ImGui::SliderFloat("Min Cull Radius", &settings.minCullRadius, 0.0f, 10.0f, "%.2f");
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            Util::DrawMultiLineTooltip({
+                "Objects with a bounding sphere radius smaller than this value will never be culled by Hi-Z.",
+                "Useful for preventing flickering on small objects like leaves or grass.",
+                "Set to 0.0 to disable this feature."
+            });
+        }
+
+        // Clamp mip selection to available range when resources exist
+        uint32_t maxMipForCulling = hiZMipCount > 0 ? (hiZMipCount - 1) : 0;
+        ImGui::SliderInt("Min Hi-Z Mip Level", reinterpret_cast<int*>(&settings.minHiZMipLevel), 0, static_cast<int>(maxMipForCulling));
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            Util::DrawMultiLineTooltip({
+                "Forces the Hi-Z culling test to use at least this mip level.",
+                "Lower mip levels (closer to 0) are higher resolution, improving accuracy but potentially reducing performance.",
+                "Higher values (more aggressive downsampling) can lead to more false positives (objects culled when visible) or flickering."
+            });
+        }
+
+        // Depth Stencil Target selection
+        const char* depthTargetNames[] = {
+            "kMAIN", "kMAIN_COPY", "kPOST_ZPREPASS_COPY", "kCUBEMAP_REFLECTIONS",
+            "kPRECIPITATION_OCCLUSION_MAP", "kTOTAL" // Add more as needed
+        };
+        int currentDepthTargetIndex = static_cast<int>(settings.depthStencilTargetIndex);
+        if (ImGui::Combo("Depth Target", &currentDepthTargetIndex, depthTargetNames, IM_ARRAYSIZE(depthTargetNames))) {
+            settings.depthStencilTargetIndex = static_cast<uint32_t>(currentDepthTargetIndex);
+            // Force resource recreation if the depth target changes
+            ReleaseAllResources();
+        }
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            Util::DrawMultiLineTooltip({
+                "Selects which depth buffer to use for Hi-Z generation.",
+                "'kMAIN' usually provides the highest detail.",
+                "Changing this setting will force a resource recreation."
+            });
+        }
         
         if (ImGui::Checkbox("Show Culling Stats", &settings.showCullingStats)) {
             logger::info("Culling stats display toggled: {}", settings.showCullingStats);
@@ -343,6 +425,55 @@ void HiZOcclusion::SaveSettings(json& o_json)
 void HiZOcclusion::RestoreDefaultSettings()
 {
     settings = {};
+}
+
+HiZOcclusion::~HiZOcclusion()
+{
+    ReleaseAllResources();
+}
+
+void HiZOcclusion::ReleaseAllResources()
+{
+    logger::info("Releasing all HiZOcclusion resources.");
+
+    // Release Hi-Z pyramid resources
+    if (hiZTexture) { hiZTexture->Release(); hiZTexture = nullptr; }
+    if (hiZSRV) { hiZSRV->Release(); hiZSRV = nullptr; }
+    for (auto* v : hiZSRVsPerMip) { if (v) v->Release(); }
+    hiZSRVsPerMip.clear();
+    for (auto* u : hiZUAVs) { if (u) u->Release(); }
+    hiZUAVs.clear();
+    hiZWidth = hiZHeight = hiZMipCount = 0;
+
+    // Release GPU culling resources
+    if (geometryBoundsBuffer) { geometryBoundsBuffer->Release(); geometryBoundsBuffer = nullptr; }
+    if (geometryBoundsSRV) { geometryBoundsSRV->Release(); geometryBoundsSRV = nullptr; }
+    if (visibilityResultsBuffer) { visibilityResultsBuffer->Release(); visibilityResultsBuffer = nullptr; }
+    if (visibilityResultsUAV) { visibilityResultsUAV->Release(); visibilityResultsUAV = nullptr; }
+    if (hiZTestParamsBuffer) { hiZTestParamsBuffer->Release(); hiZTestParamsBuffer = nullptr; }
+    if (hiZSampler) { hiZSampler->Release(); hiZSampler = nullptr; }
+
+    // Release readback staging buffers
+    for (int i = 0; i < AsyncReadbackState::BUFFER_COUNT; ++i) {
+        if (readbackState.stagingBuffers[i]) {
+            readbackState.stagingBuffers[i]->Release();
+            readbackState.stagingBuffers[i] = nullptr;
+        }
+    }
+    readbackState.numPendingReads = 0;
+
+    // Release debug resources
+    ReleaseDebugBuffer(); // This function already exists and handles its resources
+
+    // Release shaders
+    // ClearShaderCache(); // Shaders are not released here to avoid unnecessary recompilation
+
+    // Release bounds overlay resources
+    ReleaseBoundsOverlayResources(); // This function already exists and handles its resources
+
+    resourcesSetup = false;
+    resourcesValid = false;
+    status = "resources_released";
 }
 
 // Preserve Feature base-class contract
@@ -551,7 +682,7 @@ bool HiZOcclusion::InitHiZResources()
     }
 
     // Get previous frame depth dimensions
-    auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
+    auto depth = renderer->GetDepthStencilData().depthStencils[settings.depthStencilTargetIndex];
     if (!depth.depthSRV) {
 		logger::error("no depth texture SRV");
 		status = "no depth texture SRV";
@@ -597,10 +728,8 @@ bool HiZOcclusion::InitHiZResources()
 		return false;
 	}
 
-    uint32_t desiredW;
-    uint32_t desiredH;
-
-    if (globals::features::upscaling.loaded && globals::features::upscaling.IsUpscalingActive()) {
+    uint32_t desiredW, desiredH;
+    if (globals::features::upscaling.loaded && globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kNONE) {
         uint32_t displayW = static_cast<uint32_t>(globals::state->screenSize.x);
         uint32_t displayH = static_cast<uint32_t>(globals::state->screenSize.y);
         desiredW = static_cast<uint32_t>(displayW * globals::features::upscaling.dynamicResolutionWidthRatio);
@@ -633,6 +762,9 @@ bool HiZOcclusion::InitHiZResources()
     if (needRecreate) {
         auto startRecreateTimer = std::chrono::high_resolution_clock::now();
         logger::info("Recreating Hi-Z resources: {}x{}", desiredW, desiredH);
+
+        // Release all existing resources before creating new ones
+        ReleaseAllResources();
 
         // Compute mip count for the new texture
         uint32_t w = desiredW;
@@ -713,14 +845,6 @@ bool HiZOcclusion::InitHiZResources()
             if (newTexture) newTexture->Release();
             return false;
         }
-
-        // Success: release old and swap in new resources
-        if (hiZSRV) { hiZSRV->Release(); hiZSRV = nullptr; }
-        for (auto* v : hiZSRVsPerMip) { if (v) v->Release(); }
-        hiZSRVsPerMip.clear();
-        for (auto* u : hiZUAVs) { if (u) u->Release(); }
-        hiZUAVs.clear();
-        if (hiZTexture) { hiZTexture->Release(); hiZTexture = nullptr; }
 
         hiZTexture = newTexture;
         hiZSRV = newSRV;
@@ -1038,7 +1162,11 @@ void HiZOcclusion::CreateDebugBuffer()
     dbgUavDesc.Format = DXGI_FORMAT_UNKNOWN;
     dbgUavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
     dbgUavDesc.Buffer.NumElements = debugElementCount;
-    device->CreateUnorderedAccessView(debugResultsBuffer, &dbgUavDesc, &debugResultsUAV);
+    HRESULT uavResult = device->CreateUnorderedAccessView(debugResultsBuffer, &dbgUavDesc, &debugResultsUAV);
+    if (FAILED(uavResult)) {
+        logger::warn("Failed to create debugResultsUAV");
+        debugResultsUAV = nullptr; // Explicitly nullify on failure
+    }
     
     // Create double-buffered staging buffers for debug readback
     D3D11_BUFFER_DESC dbgReadback = {};
@@ -1490,7 +1618,8 @@ void HiZOcclusion::DispatchComputeShader() {
         params.overlaySettings = DirectX::XMFLOAT4(
             settings.enableBoundsViewer ? 1.0f : 0.0f,
             static_cast<float>(settings.boundsMaxObjects),
-            0.0f, 0.0f);
+            static_cast<float>(settings.minHiZMipLevel), // minHiZMipLevel
+            0.0f);
         
         // Pack color toggles into float4 (7 bits used)
         float toggleBits = 0.0f;
@@ -1591,6 +1720,12 @@ void HiZOcclusion::DispatchComputeShader() {
         //logger::info("HiZ Params - BufferDim: [{}, {}]", params.bufferDim.x, params.bufferDim.y);
 
         params.bufferDimInv = { 1.0f / params.bufferDim.x, 1.0f / params.bufferDim.y };
+
+        if (globals::features::upscaling.loaded && globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kNONE) {
+            params.upscalingRatio = { globals::features::upscaling.dynamicResolutionWidthRatio, globals::features::upscaling.dynamicResolutionHeightRatio };
+        } else {
+            params.upscalingRatio = { 1.0f, 1.0f }; // No upscaling, ratio is 1.0
+        }
 
         //logger::info("HiZ Params - BufferDimInv: [{}, {}]", params.bufferDimInv.x, params.bufferDimInv.y);
 
@@ -1702,19 +1837,28 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
         
         // Get or create temporal state
         auto& temporal = temporalStates[geo];
-        
-        // Update confidence counters
+
+        // Update confidence based on current visibility and temporal stability factor
         if (currentlyOccluded) {
-            temporal.occludedFrames = std::min<uint8_t>(temporal.occludedFrames + 1, 255);
-            temporal.visibleFrames = 0;
+            temporal.confidence = std::max(0.0f, temporal.confidence - (1.0f - settings.temporalStabilityFactor));
         } else {
-            temporal.visibleFrames = std::min<uint8_t>(temporal.visibleFrames + 1, 255);
-            temporal.occludedFrames = 0;
+            temporal.confidence = std::min(1.0f, temporal.confidence + (1.0f - settings.temporalStabilityFactor));
         }
-        
-        // Apply hysteresis - different thresholds for hiding vs showing
-        bool shouldHide = (temporal.occludedFrames >= FRAMES_TO_CULL && temporal.wasVisible);
-        bool shouldShow = (temporal.visibleFrames >= FRAMES_TO_UNCULL && !temporal.wasVisible);
+
+        // Apply hysteresis using confidence thresholds
+        // Adjust thresholds based on temporalStabilityFactor to smooth transitions
+        float cullThreshold = 1.0f - (settings.framesToCull / 10.0f);
+        float uncullThreshold = (settings.framesToUncull / 10.0f);
+
+        bool shouldHide = (temporal.confidence < cullThreshold && temporal.wasVisible);
+        bool shouldShow = (temporal.confidence > uncullThreshold && !temporal.wasVisible);
+
+        // If object is smaller than minCullRadius, always treat as visible
+        if (geometrySnapshot[i]->worldBound.radius < settings.minCullRadius) {
+            shouldHide = false; // Never hide small objects
+            shouldShow = true;  // Always show small objects (if not already visible)
+        }
+
         if (shouldHide) {
             geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
             temporal.wasVisible = false;

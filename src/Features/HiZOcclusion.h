@@ -79,6 +79,13 @@ struct HiZOcclusion : OverlayFeature
         bool showNearestOffscreen = true;  // Yellow - earlyOutReason 6
         bool showVisible = true;           // Green - earlyOutReason 0
         bool showOccluded = true;          // Red - earlyOutReason -1 (0xFFFFFFFF)
+
+        uint8_t framesToCull = 3;    // Must be occluded X frames before hiding
+        uint8_t framesToUncull = 1;  // Must be visible X frames to unhide (faster response)
+        float temporalStabilityFactor = 0.5f; // Factor for smoothing visibility changes (0.0 = instant, 1.0 = very slow)
+        float minCullRadius = 0.1f;           // Minimum bounding sphere radius for an object to be considered for culling
+        uint32_t minHiZMipLevel = 0;          // Minimum mip level to use for Hi-Z testing (0 = highest resolution)
+        uint32_t depthStencilTargetIndex = RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY; // Index of the depth stencil target to use
     };
 
     Settings settings;
@@ -272,8 +279,7 @@ struct HiZOcclusion : OverlayFeature
     // Temporal coherence tracking - prevent flickering
     struct TemporalState {
         bool wasVisible = true;  // Default visible
-        uint8_t visibleFrames = 0;  // Consecutive frames visible
-        uint8_t occludedFrames = 0;  // Consecutive frames occluded
+        float confidence = 1.0f; // 0.0 = fully occluded, 1.0 = fully visible
     };
     std::unordered_map<RE::BSGeometry*, TemporalState> temporalStates;
 
@@ -290,7 +296,7 @@ struct HiZOcclusion : OverlayFeature
 
     struct HiZSettings {
         DirectX::XMFLOAT4 hiZParams;           // 16 (mipCount, conservativeBias, geometryCount, debugMode)
-        DirectX::XMFLOAT4 overlaySettings;     // 16 (overlayEnabled, maxObjectsToDraw, unused, unused)
+        DirectX::XMFLOAT4 overlaySettings;     // 16 (overlayEnabled, maxObjectsToDraw, minHiZMipLevel, unused)
         DirectX::XMFLOAT4 overlayColorToggles; // 16 (8 bits per toggle: behind|invalid|centerOff|camInside|invalidDepth|nearestOff|visible|occluded)
     
         DirectX::XMFLOAT3 cameraWorldPos;      // 12
@@ -302,9 +308,18 @@ struct HiZOcclusion : OverlayFeature
     
         DirectX::XMFLOAT2 bufferDim;           //  8
         DirectX::XMFLOAT2 bufferDimInv;        //  8 -> 240
-        // Total: 240 + 16 (two XMFLOAT2) = 256 bytes (multiple of 16)
+        DirectX::XMFLOAT2 upscalingRatio;      //  8
+        DirectX::XMFLOAT2 pad1;                //  8 -> 288
+        // Total: 288 bytes (multiple of 16)
     };
     static_assert(sizeof(HiZSettings) % 16 == 0, "HiZSettings must be 16B-sized");
     static_assert(alignof(HiZSettings) <= 16,  "HiZSettings alignment should not exceed 16");
+
+    // Destructor for proper resource cleanup
+    ~HiZOcclusion();
+
+private:
+    // Comprehensive resource release function
+    void ReleaseAllResources();
 };
 
