@@ -47,6 +47,7 @@ struct HiZOcclusion : OverlayFeature
 	std::string status = "init";     // status message for debug display
 	bool resourcesSetup = false;    // whether resources have been initialized
 	bool resourcesValid = false;     // whether current resources are valid and safe to use
+    bool wasEnabled = false;        // Track if the feature was enabled in the previous frame
 
     // Per-frame tracking to verify build/draw order and availability
     uint32_t lastBuiltFrame = 0;   // frame index when the pyramid was last built
@@ -54,6 +55,9 @@ struct HiZOcclusion : OverlayFeature
     bool preserveResourcesForUI = true;  // prevent Reset() from destroying resources needed for debug viewer
     uint32_t resourceCreationFrame = 0;  // frame when resources were last created
     bool skipValidationThisFrame = false; // skip resource validation to prevent crashes during compilation
+
+    void Reset();
+    void ResetCulled();
 
     struct Settings {
         // Debug viewer settings

@@ -559,8 +559,46 @@ void HiZOcclusion::ClearShaderCache()
     if (hiZTestCS) { hiZTestCS->Release(); hiZTestCS = nullptr; }
 }
 
+void HiZOcclusion::Reset()
+{
+    if (!settings.enableHiZCulling) {
+        if (wasEnabled) {
+            ReleaseAllResources();
+            ResetCulled();
+            wasEnabled = false;
+        }
+    }
+    else {
+        if (!wasEnabled) {
+            SetupResources();
+            wasEnabled = true;
+        }
+    }
+}
+
+void HiZOcclusion::ResetCulled()
+{
+    // Reset hidden flag for all geometries that were culled
+    if (!unCullNextFrame.empty()) {
+        for (auto* g : unCullNextFrame) {
+            // Add robust validity check before accessing g
+            if (g && g->parent) {
+                g->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+            } else {
+                if (settings.debugMode) {
+                    logger::warn("HiZOcclusion: Skipping invalid geometry object in ResetCulled() (null geo or parent)");
+                }
+            }
+        }
+        unCullNextFrame.clear();
+    }
+}
+
 void HiZOcclusion::EarlyPrepass()
 {
+    // Call Reset() to handle dynamic enabling/disabling of the feature
+    Reset();
+
     if (settings.debugMode) {
         logger::debug("Frame {} EarlyPrepass - {} hidden geometries queued for re-test", 
                      globals::state->frameCount, unCullNextFrame.size());
@@ -1828,10 +1866,22 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
     }
 
     for (uint32_t i = 0; i < geometryCount && i < geometrySnapshot.size(); ++i) {
-        if (!geometrySnapshot[i]) continue;
+        auto* geo = geometrySnapshot[i];
+
+        // Robust validity check for geo and its parent
+        if (!geo || !geo->parent) {
+            if (settings.debugMode) {
+                logger::warn("HiZOcclusion: Skipping invalid geometry object (null geo or parent) at index {}", i);
+            }
+            // If geo is invalid, remove it from temporalStates if it exists
+            auto it = temporalStates.find(geo);
+            if (it != temporalStates.end()) {
+                temporalStates.erase(it);
+            }
+            continue;
+        }
         stats.totalTested++;
         
-        auto* geo = geometrySnapshot[i];
         const auto& result = visibilityData[i];
         bool currentlyOccluded = (result.objectDepth > result.sceneDepth + settings.conservativeBias);
         
