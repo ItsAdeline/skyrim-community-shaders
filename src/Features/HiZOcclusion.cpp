@@ -461,14 +461,10 @@ void HiZOcclusion::Prepass()
     stats.occludedCount = 0;
 
     // Reset current-frame accumulation
-    //visibilityResultsCPU.clear();
-    //visibilityResultsMap.clear();
     batchDispatchedThisFrame = false;
     
     // Reset timing statistics for this frame
     stats.geometryProcessingTimeMs = 0.0f;
-    //stats.gpuCullingTimeMs = 0.0f;
-    //stats.readbackTimeMs = 0.0f;
 
     if (!resourcesSetup) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -1534,95 +1530,11 @@ void HiZOcclusion::DispatchComputeShader() {
         if (settings.showOccluded) toggleBits += 64.0f;          // bit 6 - earlyOutReason -1
         params.overlayColorToggles = DirectX::XMFLOAT4(toggleBits, 0.0f, 0.0f, 0.0f);
 
-        if (!prevframeCamDataValid) {
-            auto vd = Util::GetCameraData(0);
-            // Extract matrices from vd (whatever accessors you currently use)
-            // Make sure to convert to row-major XMFLOAT4X4 for the cbuffers:
-            DirectX::XMMATRIX V = vd.viewMat;
-            DirectX::XMMATRIX P = vd.projMat;
-            DirectX::XMMATRIX VP = DirectX::XMMatrixMultiply(V, P);
-        
-            DirectX::XMStoreFloat4x4(&prevframeCam.view,     V);  // row-major copy
-            DirectX::XMStoreFloat4x4(&prevframeCam.proj,     P);
-            DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
-        
-            prevframeCamDataValid = true;
-            return;
-        }
-
-        // Camera Data because FrameBuffer might not be set up yet
-        auto camData = prevframeCam;
-        {
-            // Match FrameBuffer layout (row_major in HLSL): store row-major matrices.
-            // Our camData matrices appear transposed relative to FrameBuffer, so transpose before upload.
-            DirectX::XMMATRIX V  = DirectX::XMLoadFloat4x4(&camData.view);
-            DirectX::XMMATRIX P  = DirectX::XMLoadFloat4x4(&camData.proj);
-            DirectX::XMMATRIX VP = DirectX::XMLoadFloat4x4(&camData.viewProj);
-
-            DirectX::XMStoreFloat4x4(&params.cameraViewMat,     DirectX::XMMatrixTranspose(V));
-            DirectX::XMStoreFloat4x4(&params.cameraProjMat,     DirectX::XMMatrixTranspose(P));
-            DirectX::XMStoreFloat4x4(&params.cameraViewProjMat, DirectX::XMMatrixTranspose(VP));
-
-            if (settings.debugMode) {
-                // Log camera world position
-                logger::info("HiZ Params - CameraWorldPos: [{}, {}, {}]",
-                    params.cameraWorldPos.x, params.cameraWorldPos.y, params.cameraWorldPos.z);
-
-                // Log View matrix (row-major layout)
-                const auto& VM = params.cameraViewMat;
-                logger::info("Frame {}: HiZ Params - ViewMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VM._11, VM._12, VM._13, VM._14);
-                logger::info("Frame {}: HiZ Params - ViewMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VM._21, VM._22, VM._23, VM._24);
-                logger::info("Frame {}: HiZ Params - ViewMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VM._31, VM._32, VM._33, VM._34);
-                logger::info("Frame {}: HiZ Params - ViewMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VM._41, VM._42, VM._43, VM._44);
-
-                // Log Proj matrix
-                const auto& PM = params.cameraProjMat;
-                logger::info("Frame {}: HiZ Params - ProjMat r0: [{}, {}, {}, {}]", globals::state->frameCount, PM._11, PM._12, PM._13, PM._14);
-                logger::info("Frame {}: HiZ Params - ProjMat r1: [{}, {}, {}, {}]", globals::state->frameCount, PM._21, PM._22, PM._23, PM._24);
-                logger::info("Frame {}: HiZ Params - ProjMat r2: [{}, {}, {}, {}]", globals::state->frameCount, PM._31, PM._32, PM._33, PM._34);
-                logger::info("Frame {}: HiZ Params - ProjMat r3: [{}, {}, {}, {}]", globals::state->frameCount, PM._41, PM._42, PM._43, PM._44);
-
-                // Log ViewProj matrix
-                const auto& VPM = params.cameraViewProjMat;
-                logger::info("Frame {}: HiZ Params - ViewProjMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VPM._11, VPM._12, VPM._13, VPM._14);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VPM._21, VPM._22, VPM._23, VPM._24);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VPM._31, VPM._32, VPM._33, VPM._34);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VPM._41, VPM._42, VPM._43, VPM._44);
-
-                // Log View Inverse matrix (row-major, matching FrameBuffer::CameraViewInverse)
-                // We uploaded View as transpose(V), so inverse(View) row-major is transpose(inverse(V))
-                DirectX::XMMATRIX V_inv = DirectX::XMMatrixInverse(nullptr, V);
-                DirectX::XMFLOAT4X4 VInvM;
-                DirectX::XMStoreFloat4x4(&VInvM, DirectX::XMMatrixTranspose(V_inv));
-                logger::info("Frame {}: HiZ Params - ViewInvMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._11, VInvM._12, VInvM._13, VInvM._14);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._21, VInvM._22, VInvM._23, VInvM._24);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._31, VInvM._32, VInvM._33, VInvM._34);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._41, VInvM._42, VInvM._43, VInvM._44);
-            }
-        }
-
-        // Update prevframeCam
-        {
-            auto vd = Util::GetCameraData(0);
-            DirectX::XMMATRIX V = vd.viewMat;
-            DirectX::XMMATRIX P = vd.projMat;
-            DirectX::XMMATRIX VP = DirectX::XMMatrixMultiply(V, P);
-
-            DirectX::XMStoreFloat4x4(&prevframeCam.view,     V);  // row-major copy
-            DirectX::XMStoreFloat4x4(&prevframeCam.proj,     P);
-            DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
-        }
-
         D3D11_TEXTURE2D_DESC texDesc{};
         renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture->GetDesc(&texDesc);
 
         params.bufferDim = { (float)texDesc.Width, (float)texDesc.Height };
-
-        //logger::info("HiZ Params - BufferDim: [{}, {}]", params.bufferDim.x, params.bufferDim.y);
-
         params.bufferDimInv = { 1.0f / params.bufferDim.x, 1.0f / params.bufferDim.y };
-
-        //logger::info("HiZ Params - BufferDimInv: [{}, {}]", params.bufferDimInv.x, params.bufferDimInv.y);
 
         if (SUCCEEDED(context->Map(hiZTestParamsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             memcpy(mapped.pData, &params, sizeof(HiZSettings));
@@ -1631,26 +1543,6 @@ void HiZOcclusion::DispatchComputeShader() {
             logger::warn("ExecuteVisibilityTests: failed to map hiZTestParamsBuffer");
             return;
         }
-
-        // Set up framebuffer
-
-        ID3D11Buffer* buffers[1] = { *globals::game::perFrame.get() };
-
-        ID3D11Buffer* vrBuffer = nullptr;
-
-        if (REL::Module::IsVR()) {
-            static REL::Relocation<ID3D11Buffer**> VRValues{ REL::Offset(0x3180688) };
-            vrBuffer = *VRValues.get();
-        }
-        if (vrBuffer) {
-            context->CSSetConstantBuffers(12, 1, buffers);
-            context->CSSetConstantBuffers(13, 1, &vrBuffer);
-        } else {
-            context->CSSetConstantBuffers(12, 1, buffers);
-        }
-
-        // Set up shared data
-        globals::state->UpdateSharedData(true, false);
     }
     
     // Bind resources and dispatch Hi-Z test compute shader for batch processing
