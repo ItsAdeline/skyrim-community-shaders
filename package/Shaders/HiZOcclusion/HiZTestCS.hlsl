@@ -236,21 +236,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     // Early validation: Check for invalid bounds
     int earlyOutReason = 0;  // 0=none, 1=behind_camera, 2=too_far, 3=invalid_radius, 4=invalid_depth
-    
-    // Check for objects behind camera (object center in negative Z in view space)
-    /*
-    if (centerVS.z < 0.0) {
-        earlyOutReason = 1;  // Behind camera
-        if (overlaySettings.x != 0 && geometryIndex < (uint)overlaySettings.y) {
-            DrawBounds(centerVS, radius, earlyOutReason);
-        }
-        VisibilityResults[geometryIndex] = float2(1, 0);
-        if (HiZSettings.w == 1) {
-            WriteDebugOutput(geometryIndex, centerWS, radius, centerWSCameraRelative, 0.0, 0.0, earlyOutReason);
-        }
-        return;
-    }
-    */
 
     // Check for invalid radius
     if (radius <= 0.0) {

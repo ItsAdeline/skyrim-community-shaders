@@ -557,19 +557,6 @@ bool HiZOcclusion::InitHiZResources()
 		status = "no depth texture SRV";
         return false;
     }
-
-    // Verify depth buffer source and log details
-    //logger::info("Frame {} - HiZ using depth buffer: kPOST_ZPREPASS_COPY", globals::state->frameCount);
-    
-    // Check if other depth targets are available for comparison
-    //auto& depthStencils = renderer->GetDepthStencilData().depthStencils;
-    /*logger::info("Available depth targets:");
-    for (int i = 0; i < RE::RENDER_TARGETS_DEPTHSTENCIL::kTOTAL; ++i) {
-        if (depthStencils[i].depthSRV) {
-            logger::info("  Target {}: Available", i);
-        }
-    }
-    */
     
     // Log depth buffer properties
     D3D11_TEXTURE2D_DESC depthTexDesc{};
@@ -600,7 +587,7 @@ bool HiZOcclusion::InitHiZResources()
     uint32_t desiredW;
     uint32_t desiredH;
 
-    if (globals::features::upscaling.loaded && globals::features::upscaling.IsUpscalingActive()) {
+    if (globals::features::upscaling.loaded && !((Upscaling::UpscaleMethod)globals::features::upscaling.settings.upscaleMethod == Upscaling::UpscaleMethod::kNONE)) {
         uint32_t displayW = static_cast<uint32_t>(globals::state->screenSize.x);
         uint32_t displayH = static_cast<uint32_t>(globals::state->screenSize.y);
         desiredW = static_cast<uint32_t>(displayW * globals::features::upscaling.dynamicResolutionWidthRatio);
@@ -889,9 +876,9 @@ bool HiZOcclusion::SetupGPUCullingResources()
     // Create geometry bounds buffer (input)
     D3D11_BUFFER_DESC bufferDesc = {};
     bufferDesc.ByteWidth = maxGeometryCount * sizeof(DirectX::XMFLOAT4);
-    bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+    bufferDesc.Usage = D3D11_USAGE_DEFAULT;
     bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    bufferDesc.CPUAccessFlags = 0;
     bufferDesc.StructureByteStride = sizeof(DirectX::XMFLOAT4);
     bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     
@@ -1464,21 +1451,65 @@ void HiZOcclusion::UpdatePerformanceMetrics()
 }
 
 void HiZOcclusion::DispatchComputeShader() {
-    auto context = globals::d3d::context;
-    if (!context) return;
-
-    // Write all geometry bounds to GPU buffer
-    {
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        HRESULT hr = context->Map(geometryBoundsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        if (SUCCEEDED(hr)) {
-            memcpy(mapped.pData, geometryBounds.data(), numGeometry * sizeof(DirectX::XMFLOAT4));
-            context->Unmap(geometryBoundsBuffer, 0);
-        } else {
-            logger::warn("ExecuteVisibilityTests: Failed to map geometry bounds buffer");
-            return;
-        }
+    
+    if (!settings.enableHiZCulling) {
+        return;
     }
+
+    auto* context = globals::d3d::context;
+    auto* device = globals::d3d::device;
+    auto* renderer = globals::game::renderer;
+    if (!context || !device || !renderer) {
+        logger::warn("DispatchComputeShader: missing D3D context/device/renderer");
+        return;
+    }
+
+    if (!hiZTestCS || !geometryBoundsBuffer || !visibilityResultsBuffer || !hiZTestParamsBuffer || !hiZSRV || !hiZSampler) {
+        logger::warn("DispatchComputeShader: required resources not ready");
+        return;
+    }
+
+    const uint32_t geometryCount = static_cast<uint32_t>(pendingGeometry.size());
+    if (geometryCount == 0) {
+        return;
+    }
+
+    const uint32_t cappedCount = std::min<uint32_t>(geometryCount, maxGeometryCount);
+    if (geometryCount > maxGeometryCount) {
+        logger::warn("DispatchComputeShader: truncating batch {} -> {}", geometryCount, cappedCount);
+    }
+
+    geometryBounds.clear();
+    geometryBounds.reserve(cappedCount);
+
+    uint32_t processed = 0;
+    for (auto* geometry : pendingGeometry) {
+        if (!geometry || processed >= cappedCount) {
+            continue;
+        }
+
+        DirectX::XMFLOAT4 sphere{};
+        sphere.x = geometry->worldBound.center.x;
+        sphere.y = geometry->worldBound.center.y;
+        sphere.z = geometry->worldBound.center.z;
+        sphere.w = geometry->worldBound.radius;
+        if (sphere.w <= 0.0f) {
+            continue;
+        }
+
+        geometryBounds.push_back(sphere);
+        pendingGeometrySnapshot.push_back(geometry);
+        pendingGeometryResults.push_back(geometry);
+        geometryIndexMap[geometry] = processed;
+        ++processed;
+    }
+
+    if (processed == 0) {
+        return;
+    }
+
+    // Update the buffer for GPU
+    context->UpdateSubresource(geometryBoundsBuffer, 0, nullptr, geometryBounds.data(), 0, 0);
     
     // Update constant buffer with camera parameters
     {
@@ -1582,7 +1613,6 @@ void HiZOcclusion::DispatchComputeShader() {
             DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
         }
 
-        auto renderer = globals::game::renderer;
         D3D11_TEXTURE2D_DESC texDesc{};
         renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture->GetDesc(&texDesc);
 
