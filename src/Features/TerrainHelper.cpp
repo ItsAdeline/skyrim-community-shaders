@@ -5,6 +5,11 @@
 
 void TerrainHelper::DataLoaded()
 {
+	{
+		const std::unique_lock lock(extendedSlotsMutex);
+		extendedSlots.clear();
+	}
+
 	// Get the default landscape texture set for terrain helper
 	const auto defaultLandTextureSet = RE::TESForm::LookupByEditorID<RE::BGSTextureSet>("LandscapeDefault");
 	if (defaultLandTextureSet != nullptr) {

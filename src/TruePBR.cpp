@@ -1,5 +1,8 @@
 #include "TruePBR.h"
 
+#include <algorithm>
+
+
 #include "TruePBR/BSLightingShaderMaterialPBR.h"
 #include "TruePBR/BSLightingShaderMaterialPBRLandscape.h"
 
@@ -989,6 +992,8 @@ bool TruePBR::BSLightingShader_SetupMaterial(RE::BSLightingShader* shader, RE::B
 		return true;
 	}
 
+	extendedRendererState.PSResourceModifiedBits = 0;
+	std::fill(extendedRendererState.PSTexture.begin(), extendedRendererState.PSTexture.end(), nullptr);
 	return false;
 }
 

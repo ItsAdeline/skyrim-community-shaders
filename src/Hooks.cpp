@@ -689,20 +689,26 @@ namespace Hooks
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
-	struct BSLightingShader_SetupMaterial
-	{
+	struct BSLightingShader_SetupMaterial {
 		static void thunk(RE::BSLightingShader* shader, RE::BSLightingShaderMaterialBase const* material)
 		{
-			// setup material for PBR
-			auto TruePBRSingleton = globals::truePBR;
-			if (TruePBRSingleton->BSLightingShader_SetupMaterial(shader, material)) {
-				// if PBR, we are done
+			if (!material) {
+				func(shader, material);
 				return;
 			}
 
-			// vanilla
-			func(shader, material);
+			if (material->GetFeature() == RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend) {
+				func(shader, material);
+			} else {
+				auto TruePBRSingleton = globals::truePBR;
+				if (TruePBRSingleton->BSLightingShader_SetupMaterial(shader, material)) {
+					goto helpers;
+				}
 
+				func(shader, material);
+			}
+
+		helpers:
 			// terrain helper
 			auto& terrainHelper = globals::features::terrainHelper;
 			if (terrainHelper.loaded) {
@@ -714,7 +720,7 @@ namespace Hooks
 			if (skin.loaded && skin.settings.EnableSkin) {
 				skin.BSLightingShader_SetupMaterial(material);
 			}
-		};
+		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
