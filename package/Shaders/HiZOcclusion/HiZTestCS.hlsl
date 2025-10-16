@@ -36,6 +36,8 @@ cbuffer HiZParams : register(b0)
     row_major float4x4 cameraViewProjMat;
     float2 BufferDim;      // screenWidth, screenHeight
     float2 BufferDimInv;   // 1/screenWidth, 1/screenHeight
+	float2 upscalingRatio;
+	float2 pad1;
 };
 
 // Debug output buffer - structured for comprehensive debugging
