@@ -75,6 +75,8 @@ RWTexture2D<float4> PackedNormal : register(u3);
 #endif
 
 	float reactiveMask = taaMask.x * 0.1 + taaMask.y;
+	reactiveMask = max(reactiveMask, NormalsWaterMask[dispatchID.xy].w);
+ 	reactiveMask = max(reactiveMask, transparencyCompositionMask); 
 	ReactiveMask[dispatchID.xy] = reactiveMask;
 
 	TransparencyCompositionMask[dispatchID.xy] = transparencyCompositionMask;
