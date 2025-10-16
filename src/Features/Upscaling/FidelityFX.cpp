@@ -137,7 +137,7 @@ void FidelityFX::Present(bool a_useFrameGeneration)
 		dispatchParameters.jitterOffset.x = -upscaling.jitter.x;
 		dispatchParameters.jitterOffset.y = -upscaling.jitter.y;
 
-		dispatchParameters.frameTimeDelta = RE::GetSecondsSinceLastFrame() * 1000.f;
+		dispatchParameters.frameTimeDelta = globals::game::ui->GameIsPaused() ? (1000.f / 60.f) : (RE::GetSecondsSinceLastFrame() * 1000.f);
 
 		dispatchParameters.cameraFar = *globals::game::cameraFar;
 		dispatchParameters.cameraNear = *globals::game::cameraNear;

@@ -683,6 +683,6 @@ void Streamline::ApplyNISSharpening(ID3D12Resource* a_inputColorTexture, ID3D12R
 	sl::ViewportHandle view(viewport);
 	const sl::BaseStructure* inputs[] = { &view };
 	if (SL_FAILED(result, slEvaluateFeature(sl::kFeatureNIS, *frameToken, inputs, _countof(inputs), a_commandList))) {
-		logger::error("[Streamline] Failed to evaluate NIS feature");
+		logger::error("[Streamline] Failed to evaluate NIS feature, error code: {}", (int)result);
 	}
 }

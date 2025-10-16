@@ -148,17 +148,28 @@ HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 			commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
 		}
 
-		commandLists[frameIndex]->CopyResource(realSwapChain, fakeSwapChain);
+        commandLists[frameIndex]->CopyResource(realSwapChain, fakeSwapChain);
 
-		{
-			std::vector<D3D12_RESOURCE_BARRIER> barriers;
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
-			barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(realSwapChain, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT));
-			commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
-		}
+        {
+            std::vector<D3D12_RESOURCE_BARRIER> barriers;
+            barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(fakeSwapChain, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON));
+            barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(realSwapChain, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT));
+            // Transition depth and motion vectors for FSR3 FG
+            barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(depthBufferShared12->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+            barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(motionVectorBufferShared12->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
+            commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+        }
 	}
 
 	globals::features::upscaling.fidelityFX.Present(upscaling.settings.frameGenerationMode && !globals::game::ui->GameIsPaused());
+
+	// Transition depth and motion vectors back after FSR3 FG
+	{
+		std::vector<D3D12_RESOURCE_BARRIER> barriers;
+		barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(depthBufferShared12->resource.get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+		barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(motionVectorBufferShared12->resource.get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+		commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+	}
 
 	DX::ThrowIfFailed(commandLists[frameIndex]->Close());
 
@@ -226,19 +237,39 @@ float DX12SwapChain::GetFrameTime() const
 
 WrappedResource::WrappedResource(D3D11_TEXTURE2D_DESC a_texDesc, ID3D11Device5* a_d3d11Device, ID3D12Device* a_d3d12Device)
 {
-	// Create D3D11 shared texture directly instead of wrapping D3D12 resource
-	a_texDesc.MiscFlags |= D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
-	DX::ThrowIfFailed(a_d3d11Device->CreateTexture2D(&a_texDesc, nullptr, &resource11));
+	// Create D3D12 shared texture
+	D3D12_RESOURCE_DESC texDesc12 = {};
+	texDesc12.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	texDesc12.Width = a_texDesc.Width;
+	texDesc12.Height = a_texDesc.Height;
+	texDesc12.MipLevels = static_cast<UINT16>(a_texDesc.MipLevels);
+	texDesc12.DepthOrArraySize = static_cast<UINT16>(a_texDesc.ArraySize);
+	texDesc12.Format = a_texDesc.Format;
+	texDesc12.SampleDesc.Count = a_texDesc.SampleDesc.Count;
+	texDesc12.SampleDesc.Quality = a_texDesc.SampleDesc.Quality;
+	texDesc12.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 
-	// Get shared handle from D3D11 texture to enable D3D12 access
-	winrt::com_ptr<IDXGIResource1> dxgiResource;
-	DX::ThrowIfFailed(resource11->QueryInterface(IID_PPV_ARGS(dxgiResource.put())));
+	D3D12_HEAP_PROPERTIES heapProps = {};
+	heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+	DX::ThrowIfFailed(a_d3d12Device->CreateCommittedResource(
+		&heapProps,
+		D3D12_HEAP_FLAG_SHARED,
+		&texDesc12,
+		D3D12_RESOURCE_STATE_COMMON,
+		nullptr,
+		IID_PPV_ARGS(resource.put())));
+
+	// Create a shared handle for the D3D12 resource
 	HANDLE sharedHandle = nullptr;
-	DX::ThrowIfFailed(dxgiResource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &sharedHandle));
+	DX::ThrowIfFailed(a_d3d12Device->CreateSharedHandle(resource.get(), nullptr, GENERIC_ALL, nullptr, &sharedHandle));
 
-	// Open the shared D3D11 texture as D3D12 resource
-	DX::ThrowIfFailed(a_d3d12Device->OpenSharedHandle(sharedHandle, IID_PPV_ARGS(resource.put())));
+	// Open the shared handle in D3D11
+	winrt::com_ptr<ID3D11Resource> d3d11Resource;
+	DX::ThrowIfFailed(a_d3d11Device->OpenSharedResource1(sharedHandle, IID_PPV_ARGS(d3d11Resource.put())));
 	CloseHandle(sharedHandle);
+
+	DX::ThrowIfFailed(d3d11Resource->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&resource11));
 
 	if (a_texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
 		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
