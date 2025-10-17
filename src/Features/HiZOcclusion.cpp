@@ -392,7 +392,7 @@ void HiZOcclusion::Reset()
         if (wasEnabled) {
             // Uncull all hidden geometries
             if (!unCullNextFrame.empty()) {
-                for (auto* geometry : unCullNextFrame) {
+                for (auto& geometry : unCullNextFrame) {
                     if (geometry) {
                         geometry->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
                     }
@@ -457,9 +457,6 @@ void HiZOcclusion::Prepass()
     stats.culledFrustum = 0;
     stats.culledNoEarlyOut = 0;
 
-    // Reset current-frame accumulation
-    batchDispatchedThisFrame = false;
-
     if (!resourcesSetup) {
         auto start = std::chrono::high_resolution_clock::now();
         InitShaders();
@@ -499,11 +496,12 @@ void HiZOcclusion::Prepass()
 
     if (!unCullNextFrame.empty()) {
         // Re-add previously hidden geometry for continuous testing
-        for (auto* geo : unCullNextFrame) {
-            if (geo && pendingGeometrySet.find(geo) == pendingGeometrySet.end()) {
+        for (auto& geo : unCullNextFrame) {
+            auto* rawGeo = geo.get();
+            if (rawGeo && !pendingGeometrySet.contains(rawGeo)) {
                 //geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
                 pendingGeometry.push_back(geo);
-                pendingGeometrySet.insert(geo);
+                pendingGeometrySet.insert(rawGeo);
             }
         }
     }
@@ -518,7 +516,6 @@ void HiZOcclusion::Prepass()
         pendingGeometry.clear();
         pendingGeometrySet.clear();
         geometryBounds.clear();
-        geometryIndexMap.clear();
     } else {
         logger::debug("Frame {} - No pending geometry to process in Prepass", globals::state->frameCount);
     }
@@ -1217,7 +1214,7 @@ void HiZOcclusion::DispatchComputeShader()
     }
 
     uint32_t processed = 0;
-    for (auto* geometry : pendingGeometry) {
+    for (auto& geometry : pendingGeometry) {
         if (!geometry || processed >= cappedCount) {
             continue;
         }
@@ -1234,7 +1231,6 @@ void HiZOcclusion::DispatchComputeShader()
         geometryBounds.push_back(sphere);
         pendingGeometrySnapshot.push_back(geometry);
         pendingGeometryResults.push_back(geometry);
-        geometryIndexMap[geometry] = processed;
         ++processed;
     }
 
@@ -1349,7 +1345,7 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
         if (!geometrySnapshot[i]) continue;
         stats.totalTested++;
         
-        auto* geo = geometrySnapshot[i];
+        auto& geo = geometrySnapshot[i];
         const auto& testResults = visibilityData[i];
 
         switch (testResults.result) {

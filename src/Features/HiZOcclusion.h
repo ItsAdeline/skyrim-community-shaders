@@ -217,7 +217,7 @@ struct HiZOcclusion : OverlayFeature
         D3D11_MAPPED_SUBRESOURCE mappedData[BUFFER_COUNT] = {};
         bool hasPendingRead[BUFFER_COUNT] = {};
         uint32_t pendingFrameIndex[BUFFER_COUNT] = {};
-        std::vector<RE::BSGeometry*> geometrySnapshots[BUFFER_COUNT];  // Geometry tested in each buffer
+        std::vector<RE::NiPointer<RE::BSGeometry>> geometrySnapshots[BUFFER_COUNT];  // Geometry tested in each buffer
         uint32_t geometryCount[BUFFER_COUNT] = {};  // Number of geometry in each buffer
         uint32_t writeIndex = 0;  // Next buffer to write GPU results to
         uint32_t readIndex = 0;   // Next buffer to try reading from
@@ -228,35 +228,14 @@ struct HiZOcclusion : OverlayFeature
     // Shared state for async pipeline
     uint32_t numGeometry = 0;  // Number of geometry objects in current batch
     uint32_t numGeometryPending = 0;  // Number of geometry in pending results
-    std::vector<RE::BSGeometry*> pendingGeometrySnapshot;  // Snapshot for current dispatch
-    std::vector<RE::BSGeometry*> pendingGeometryResults;  // Snapshot for async result processing
+    std::vector<RE::NiPointer<RE::BSGeometry>> pendingGeometrySnapshot;  // Snapshot for current dispatch
+    std::vector<RE::NiPointer<RE::BSGeometry>> pendingGeometryResults;  // Snapshot for async result processing
     
     // Geometry batch for GPU culling
-    std::vector<RE::BSGeometry*> pendingGeometry;
+    std::vector<RE::NiPointer<RE::BSGeometry>> pendingGeometry;
     std::unordered_set<RE::BSGeometry*> pendingGeometrySet;  // For fast lookup
-    std::vector<RE::BSGeometry*> unCullNextFrame;
+    std::vector<RE::NiPointer<RE::BSGeometry>> unCullNextFrame;
     std::vector<DirectX::XMFLOAT4> geometryBounds;  // xyz=center, w=radius
-    std::vector<OcclusionResult> visibilityResultsCPU;     // CPU-side visibility results (readback)
-    // Mapping and per-frame state for result lookup
-    std::unordered_map<RE::BSGeometry*, uint32_t> geometryIndexMap;   // geometry -> batch index (current frame pending)
-    std::unordered_map<RE::BSGeometry*, OcclusionResult> visibilityResultsMap; // stores all results for debugging
-
-    // Temporal coherence tracking - prevent flickering
-    struct TemporalState {
-        bool wasVisible = true;  // Default visible
-        uint8_t visibleFrames = 0;  // Consecutive frames visible
-        uint8_t occludedFrames = 0;  // Consecutive frames occluded
-    };
-    std::unordered_map<RE::BSGeometry*, TemporalState> temporalStates;
-
-    // Settings for temporal stability
-    const uint8_t FRAMES_TO_CULL = 3;    // Must be occluded 3 frames before hiding
-    const uint8_t FRAMES_TO_UNCULL = 1;  // Must be visible 1 frame to unhide (faster response)
-
-    // Previous-frame results used during rendering to avoid feedback/flicker
-    std::unordered_map<RE::BSGeometry*, OcclusionResult> visibilityResultsPrev; // stores all results for debugging
-    bool batchDispatchedThisFrame = false;                             // guards single dispatch + readback per frame
-    uint32_t batchFrame = 0;                                           // frame index that pendingGeometry belongs to
 
     void ExecuteVisibilityTests();
 
