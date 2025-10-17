@@ -24,13 +24,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
     debugMode,
     enableBoundsViewer,
     boundsMaxObjects,
-    showBehindCamera,
-    showInvalidRadius,
-    showCameraInside,
-    showInvalidDepth,
-    showNearestOffscreen,
-    showVisible,
-    showOccluded
+    showVisTestPassed,
+    showVisInsideBounds,
+    showVisInvalidRadius,
+    showCulledFrustum,
+    showCulledNoEarlyOut
 )
 
 namespace
@@ -148,72 +146,53 @@ void HiZOcclusion::DrawSettings()
                 ImGui::Separator();
                 ImGui::Text("Color Filters:");
                 
-                ImGui::Checkbox("Green (Visible)", &settings.showVisible);
+                ImGui::Checkbox("Green (Visible: Test Passed)", &settings.showVisTestPassed);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.visibleCount);
+                ImGui::TextColored(ImVec4(0.f, 1.f, 0.f, 1.f), ": %u", stats.visTestPassed);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects that passed all tests and are visible");
+                    ImGui::SetTooltip("Geometry that passed a valid depth test");
                 }
                 
-                ImGui::Checkbox("Red (Occluded)", &settings.showOccluded);
+                ImGui::Checkbox("Teal (Visible: Camera Inside Bounds)", &settings.showVisInsideBounds);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.occludedCount);
+                ImGui::TextColored(ImVec4(0.f, 1.f, 0.5f, 1.f), ": %u", stats.visInsideBounds);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects occluded by Hi-Z depth test");
+                    ImGui::SetTooltip("Geometry whose bounds clip the camera");
                 }
                 
-                ImGui::Checkbox("Magenta (Behind Camera)", &settings.showBehindCamera);
+                ImGui::Checkbox("Cyan (Visible: Invalid Radius)", &settings.showVisInvalidRadius);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.behindCamera);
+                ImGui::TextColored(ImVec4(0.f, 1.f, 1.f, 1.f), ": %u", stats.visInvalidRadius);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects with center behind camera (negative Z in view space)");
+                    ImGui::SetTooltip("Geometry with a radius of 0 or less");
                 }
                 
-                ImGui::Checkbox("Yellow (Nearest Off-Screen)", &settings.showNearestOffscreen);
+                ImGui::Checkbox("Magenta (Culled: Frustum)", &settings.showCulledFrustum);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.nearestOffscreen);
+                ImGui::TextColored(ImVec4(1.f, 0.f, 1.f, 1.f), ": %u", stats.culledFrustum);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects with nearest point outside screen bounds");
+                    ImGui::SetTooltip("Geometry with no valid boundary points on screen");
                 }
                 
-                ImGui::Checkbox("Orange (Camera Inside)", &settings.showCameraInside);
+                ImGui::Checkbox("Red (Culled: No Early Out)", &settings.showCulledNoEarlyOut);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.cameraInside);
+                ImGui::TextColored(ImVec4(1.f, 0.f, 0.f, 1.f), ": %u", stats.culledNoEarlyOut);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Camera is inside the bounding sphere");
-                }
-                
-                ImGui::Checkbox("Dark Yellow (Invalid Radius)", &settings.showInvalidRadius);
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.invalidRadius);
-                if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects with invalid (zero or negative) radius");
-                }
-                
-                ImGui::Checkbox("Pink (Invalid Depth)", &settings.showInvalidDepth);
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.invalidDepth);
-                if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects with depth values outside valid range (0-1)");
+                    ImGui::SetTooltip("Geometry that failed all tests and were culled");
                 }
             }
-            
             ImGui::TreePop();
         }
 
         // Status line
         ImGui::Separator();
         ImGui::Text("Frame: %u", globals::state ? globals::state->frameCount : 0);
-		//ImGui::Text("Resources: %s", resourcesSetup ? "true" : "false");
 		ImGui::Text("Status: %s", status.c_str());
-        //ImGui::Text("Hi-Z: %s, mips=%u", hiZTexture ? "Ready" : "Not Built", hiZMipCount);
-        //ImGui::Text("SRVs: %u, UAVs: %u", (uint32_t)hiZSRVsPerMip.size(), (uint32_t)hiZUAVs.size());
         ImGui::Text("Geometry from frame %u: %u", globals::state->frameCount - 1, stats.geometryListSize);
-        //ImGui::Text("CPU Results list size: %u", (uint32_t)visibilityResultsCPU.size());
-        //ImGui::Text("Map Results list size: %u", (uint32_t)visibilityResultsMap.size());
         ImGui::Text("Total tested: %u", stats.totalTested);
-        ImGui::Text("Culled: %u", stats.culled);
-        ImGui::Text("Visible: %u", stats.visible);
+        ImGui::Text("Culled: %u", stats.culledFrustum + stats.culledNoEarlyOut);
+        ImGui::Text("Visible: %u", stats.visTestPassed + stats.visInsideBounds + stats.visInvalidRadius);
+        ImGui::Text("Unknown/Default: %u", stats.defaultValue);
         // Display profiling durations in micro seconds
         ImGui::Text("GPU time: %.2f us", stats.gpuCullingTimeMs * 1000);
         ImGui::Text("Copy results time: %.2f us", stats.copyTimeMs * 1000);
@@ -221,27 +200,6 @@ void HiZOcclusion::DrawSettings()
         ImGui::Text("Copy data time: %.2f us", stats.copyDataTimeMs * 1000);
         ImGui::Text("Unmap time: %.2f us", stats.unmapTimeMs * 1000);
         ImGui::Text("CPU Readback time: %.2f us", stats.readbackTimeMs * 1000);
-
-        /*
-        // Detailed resource validation in UI
-        if (ImGui::TreeNode("Resource Validation")) {
-            ImGui::Text("Texture pointer: %p", hiZTexture);
-            ImGui::Text("Main SRV: %p", hiZSRV);
-            
-            for (uint32_t i = 0; i < std::min(hiZMipCount, (uint32_t)hiZSRVsPerMip.size()); ++i) {
-                ImVec4 color = hiZSRVsPerMip[i] ? ImVec4(0, 1, 0, 1) : ImVec4(1, 0, 0, 1);
-                ImGui::TextColored(color, "Mip %u SRV: %p", i, hiZSRVsPerMip[i]);
-            }
-            
-            ImGui::TreePop();
-        }
-        if (hiZTexture && (hiZSRVsPerMip.size() != hiZMipCount || hiZUAVs.size() != hiZMipCount)) {
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "Warning: view count mismatch (mips=%u, SRVs=%llu, UAVs=%llu)",
-                hiZMipCount,
-                static_cast<unsigned long long>(hiZSRVsPerMip.size()),
-                static_cast<unsigned long long>(hiZUAVs.size()));
-        }
-        */
 
         ImGui::TreePop();
     }
@@ -433,7 +391,34 @@ void HiZOcclusion::Reset()
     if (!settings.enableHiZCulling) {
         if (wasEnabled) {
             // Uncull all hidden geometries
+            if (!unCullNextFrame.empty()) {
+                for (auto* geometry : unCullNextFrame) {
+                    if (geometry) {
+                        geometry->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                    }
+                }
+                unCullNextFrame.clear();
+            }
+            // Empty pending geometry list
+            if (!pendingGeometry.empty()) {
+                pendingGeometry.clear();
+            }
             // Release and clear all resources
+            ReleaseBoundsOverlayResources();
+            ReleaseDebugBuffer();
+            UnbindD3DResources();
+            // Reset stats
+            stats.frameIndex = 0;
+            stats.totalTested = 0;
+            stats.geometryListSize = 0;
+            stats.visTestPassed = 0;
+            stats.visInsideBounds = 0;
+            stats.visInvalidRadius = 0;
+            stats.defaultValue = 0;
+            stats.culledFrustum = 0;
+            stats.culledNoEarlyOut = 0;
+            stats.resourceSetupDurationMS = 0.0f;
+            stats.recreateDurationMS = 0.0f;
             wasEnabled = false;
         }
     } else {
@@ -463,23 +448,17 @@ void HiZOcclusion::Prepass()
     stats.frameIndex = currentFrame;
     stats.totalTested = 0;
     stats.geometryListSize = (uint32_t)pendingGeometry.size();
-    stats.culled = 0;
-    stats.visible = 0;
     stats.resourceSetupDurationMS = 0.0f;
     stats.recreateDurationMS = 0.0f;
-    stats.behindCamera = 0;
-    stats.invalidRadius = 0;
-    stats.cameraInside = 0;
-    stats.invalidDepth = 0;
-    stats.nearestOffscreen = 0;
-    stats.visibleCount = 0;
-    stats.occludedCount = 0;
+    stats.visTestPassed = 0;
+    stats.visInsideBounds = 0;
+    stats.visInvalidRadius = 0;
+    stats.defaultValue = 0;
+    stats.culledFrustum = 0;
+    stats.culledNoEarlyOut = 0;
 
     // Reset current-frame accumulation
     batchDispatchedThisFrame = false;
-    
-    // Reset timing statistics for this frame
-    stats.geometryProcessingTimeMs = 0.0f;
 
     if (!resourcesSetup) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -504,7 +483,7 @@ void HiZOcclusion::Prepass()
     }
     
     // Setup GPU culling resources if not already done
-    if (settings.enableHiZCulling && (!geometryBoundsBuffer || !hiZTestParamsBuffer || !hiZSampler || !visibilityResultsBuffer)) {
+    if (!geometryBoundsBuffer || !hiZTestParamsBuffer || !hiZSampler || !visibilityResultsBuffer) {
         if (!SetupGPUCullingResources()) {
             logger::error("HiZOcclusion::EarlyPrepass - failed to setup GPU culling resources");
             status = "failed to setup GPU culling resources";
@@ -529,7 +508,7 @@ void HiZOcclusion::Prepass()
         }
     }
 
-    if (readbackState.hasPendingRead || !pendingGeometry.empty()) {
+    if (readbackState.numPendingReads > 0 || !pendingGeometry.empty()) {
         ExecuteVisibilityTests();
     }
 
@@ -996,9 +975,6 @@ bool HiZOcclusion::SetupGPUCullingResources()
         return false;
     }
 
-    visibilityResultsCPU.resize(maxGeometryCount);
-    logger::info("GPU culling resources created successfully");
-
     // Debug output buffers
     if (settings.debugMode || settings.enableBoundsViewer) {
         // Only create debug buffer when actually debugging
@@ -1075,19 +1051,9 @@ void HiZOcclusion::ExecuteVisibilityTests()
         logger::warn("ExecuteVisibilityTests: D3D context or device not initialized");
         return;
     }
-
-    // Clear previous frame results and prepare for N+1 processing
-    visibilityResultsMap.clear();
-    visibilityResultsCPU.clear();
-
-    // Check if we have geometry from previous frame to process
-    if (pendingGeometry.empty() && readbackState.numPendingReads == 0) {
-        logger::debug("ExecuteVisibilityTests: No geometry to test and no pending results");
-        return;
-    }
-
+    
     // Try to read results from any pending staging buffers (multi-buffered approach)
-    {
+    if (readbackState.numPendingReads > 0) {
         auto readStart = std::chrono::high_resolution_clock::now();
         
         // Try to read from all pending buffers (oldest first)
@@ -1213,87 +1179,6 @@ void HiZOcclusion::ExecuteVisibilityTests()
         // Update statistics
         stats.frameIndex = globals::state->frameCount;
     }
-
-    /*
-    // Read back and log runtime diagnostics from shader when enabled
-    if ((settings.debugMode || settings.enableBoundsViewer) && debugResultsBuffer && debugReadbackBuffer) {
-
-        context->CopyResource(debugReadbackBuffer, debugResultsBuffer);
-
-        if (debugReadbackBuffer) {
-            D3D11_MAPPED_SUBRESOURCE dbgMap{};
-            if (SUCCEEDED(context->Map(debugReadbackBuffer, 0, D3D11_MAP_READ, 0, &dbgMap))) {
-                auto* debugData = reinterpret_cast<const HiZOcclusion::DebugData*>(dbgMap.pData);            // Print first up to 10 entries written by the shader
-            
-                // Print first up to 10 CULLED objects for debugging
-                logger::info("=== HiZ Debug Data (First 10 culled objects) ===");
-
-                // Map early-out reason codes to readable strings
-                auto getReasonString = [](uint32_t reason) -> const char* {
-                    switch (reason) {
-                        case 1: return "Behind camera";
-                        case 2: return "Invalid radius";
-                        case 4: return "Camera inside sphere";
-                        case 5: return "Invalid depth";
-                        case 6: return "Nearest point off-screen";
-                        case 0: return "Visible (passed all tests)";
-                        case 0xFFFFFFFF: return "Occluded by Hi-Z";  // -1 as uint
-                        default: return "Unknown";
-                    }
-                };
-
-                uint32_t culledCount = 0;
-                for (uint32_t i = 0; i < numGeometry && culledCount < 10; ++i) {
-                    const auto& data = debugData[i];
-                    
-                    // Only log objects that were culled (earlyOutReason != 0)
-                    // earlyOutReason == 0 means visible (passed all tests)
-                    if (data.earlyOutReason != 0) {
-                        logger::info("Geo {}: centerWS=({:.2f}, {:.2f}, {:.2f}), radius={:.2f}",
-                            i, data.centerWS_radius.x, data.centerWS_radius.y, data.centerWS_radius.z, data.centerWS_radius.w);
-                        logger::info("  CameraRel=({:.2f}, {:.2f}, {:.2f}), objDepth={:.4f}, sceneDepth={:.4f}",
-                            data.centerRel_objDepth.x, data.centerRel_objDepth.y, 
-                            data.centerRel_objDepth.z, data.centerRel_objDepth.w, data.sceneDepth);
-                        logger::info("  earlyOutReason={} ({})", 
-                            data.earlyOutReason, getReasonString(data.earlyOutReason));
-                        culledCount++;
-                    }
-                }
-            
-                if (culledCount == 0) {
-                    logger::info("  No culled objects found in this frame");
-                } else {
-                    logger::info("=== Logged {} culled objects ===", culledCount);
-                }
-
-                // Update statistics
-                stats.behindCamera = 0;
-                stats.invalidRadius = 0;
-                stats.cameraInside = 0;
-                stats.invalidDepth = 0;
-                stats.nearestOffscreen = 0;
-                stats.visibleCount = 0;
-                stats.occludedCount = 0;
-                
-                for (uint32_t i = 0; i < numGeometry; ++i) {
-                    const auto& data = debugData[i];
-                    switch (data.earlyOutReason) {
-                        case 1: stats.behindCamera++; break;
-                        case 2: stats.invalidRadius++; break;
-                        case 4: stats.cameraInside++; break;
-                        case 5: stats.invalidDepth++; break;
-                        case 6: stats.nearestOffscreen++; break;
-                        case 0: stats.visibleCount++; break;
-                        case 0xFFFFFFFF: stats.occludedCount++; break;  // -1 as uint
-                        default: break;
-                    }
-                }
-
-                context->Unmap(debugReadbackBuffer, 0);
-            }
-        }
-    }
-    */
 }
 
 void HiZOcclusion::UnbindD3DResources()
@@ -1306,12 +1191,8 @@ void HiZOcclusion::UnbindD3DResources()
     context->CSSetConstantBuffers(0, 1, nullCBs);
 }
 
-void HiZOcclusion::DispatchComputeShader() {
-    
-    if (!settings.enableHiZCulling) {
-        return;
-    }
-
+void HiZOcclusion::DispatchComputeShader() 
+{
     auto* context = globals::d3d::context;
     auto* device = globals::d3d::device;
     auto* renderer = globals::game::renderer;
@@ -1334,9 +1215,6 @@ void HiZOcclusion::DispatchComputeShader() {
     if (geometryCount > maxGeometryCount) {
         logger::warn("DispatchComputeShader: truncating batch {} -> {}", geometryCount, cappedCount);
     }
-
-    geometryBounds.clear();
-    geometryBounds.reserve(cappedCount);
 
     uint32_t processed = 0;
     for (auto* geometry : pendingGeometry) {
@@ -1381,13 +1259,11 @@ void HiZOcclusion::DispatchComputeShader() {
         
         // Pack color toggles into float4 (7 bits used)
         float toggleBits = 0.0f;
-        if (settings.showBehindCamera) toggleBits += 1.0f;       // bit 0 - earlyOutReason 1
-        if (settings.showInvalidRadius) toggleBits += 2.0f;      // bit 1 - earlyOutReason 2
-        if (settings.showCameraInside) toggleBits += 4.0f;       // bit 2 - earlyOutReason 4
-        if (settings.showInvalidDepth) toggleBits += 8.0f;       // bit 3 - earlyOutReason 5
-        if (settings.showNearestOffscreen) toggleBits += 16.0f;  // bit 4 - earlyOutReason 6
-        if (settings.showVisible) toggleBits += 32.0f;           // bit 5 - earlyOutReason 0
-        if (settings.showOccluded) toggleBits += 64.0f;          // bit 6 - earlyOutReason -1
+        if (settings.showVisTestPassed) toggleBits += 1.0f;       // bit 0
+        if (settings.showVisInsideBounds) toggleBits += 2.0f;      // bit 1
+        if (settings.showVisInvalidRadius) toggleBits += 4.0f;       // bit 2
+        if (settings.showCulledFrustum) toggleBits += 8.0f;       // bit 3
+        if (settings.showCulledNoEarlyOut) toggleBits += 16.0f;  // bit 4
         params.overlayColorToggles = DirectX::XMFLOAT4(toggleBits, 0.0f, 0.0f, 0.0f);
 
         D3D11_TEXTURE2D_DESC texDesc{};
@@ -1468,55 +1344,48 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
     // Use the geometry snapshot that was stored with this buffer
     const auto& geometrySnapshot = readbackState.geometrySnapshots[bufferIndex];
     const uint32_t geometryCount = readbackState.geometryCount[bufferIndex];
-    
-    if (settings.debugMode) {
-        logger::info("Processing {} results from buffer {} (frame {})",
-                    geometryCount, bufferIndex, readbackState.pendingFrameIndex[bufferIndex]);
-    }
 
     for (uint32_t i = 0; i < geometryCount && i < geometrySnapshot.size(); ++i) {
         if (!geometrySnapshot[i]) continue;
         stats.totalTested++;
         
         auto* geo = geometrySnapshot[i];
-        const auto& result = visibilityData[i];
-        bool currentlyOccluded = (result.objectDepth > result.sceneDepth + settings.conservativeBias);
-        
-        // Get or create temporal state
-        auto& temporal = temporalStates[geo];
-        
-        // Update confidence counters
-        if (currentlyOccluded) {
-            temporal.occludedFrames = std::min<uint8_t>(temporal.occludedFrames + 1, 255);
-            temporal.visibleFrames = 0;
-        } else {
-            temporal.visibleFrames = std::min<uint8_t>(temporal.visibleFrames + 1, 255);
-            temporal.occludedFrames = 0;
-        }
-        
-        // Apply hysteresis - different thresholds for hiding vs showing
-        bool shouldHide = (temporal.occludedFrames >= FRAMES_TO_CULL && temporal.wasVisible);
-        bool shouldShow = (temporal.visibleFrames >= FRAMES_TO_UNCULL && !temporal.wasVisible);
-        if (shouldHide) {
-            geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
-            temporal.wasVisible = false;
-            unCullNextFrame.push_back(geo);
-            stats.culled++;
-        } else if (shouldShow) {
-            geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
-            temporal.wasVisible = true;
-            stats.visible++;
-        } else {
-            // No state change - keep current visibility
-            if (temporal.wasVisible) {
-                stats.visible++;
-                // If currently occluded but not confident yet, keep testing
-                if (currentlyOccluded) {
-                    unCullNextFrame.push_back(geo);
-                }
-            } else {
-                stats.culled++;
-                unCullNextFrame.push_back(geo);  // Keep testing
+        const auto& testResults = visibilityData[i];
+
+        switch (testResults.result) {
+            case -3: {// Not culled: Test passed
+                geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                stats.visTestPassed++;
+                break;
+            }
+            case -2: { // Not culled: Inside bounds
+                geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                stats.visInsideBounds++;
+                break;
+            }
+            case -1: { // Not culled: Invalid Radius
+                geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                stats.visInvalidRadius++;
+                break;
+            }
+            case 0: { // default value
+                stats.defaultValue++;
+                break;
+            }
+            case 1: { // Culled: Frustum
+                stats.culledFrustum++;
+                geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
+                unCullNextFrame.push_back(geo);
+                break;
+            }
+            case 2: { // Culled: No early out
+                stats.culledNoEarlyOut++;
+                geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
+                unCullNextFrame.push_back(geo);
+                break;
+            }
+            default: {
+                break;
             }
         }
     }

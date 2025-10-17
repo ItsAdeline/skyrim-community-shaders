@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <chrono>
+#include <RE/N/NiSmartPointer.h>
 
 struct HiZOcclusion : OverlayFeature
 {
@@ -66,7 +67,7 @@ struct HiZOcclusion : OverlayFeature
         
         // Hi-Z culling settings
         bool enableHiZCulling = true;     // enable Hi-Z occlusion culling
-        float conservativeBias = 0.01f;   // depth bias for conservative testing (0.01 = 1% bias)
+        float conservativeBias = 0.010f;   // depth bias for conservative testing (0.01 = 1% bias)
         bool showCullingStats = false;    // show Hi-Z culling statistics in UI
 
         // Bounds overlay viewer (draw tested bounds and closest point)
@@ -74,13 +75,11 @@ struct HiZOcclusion : OverlayFeature
         uint32_t boundsMaxObjects = 256;  // maximum objects to draw outlines for (subsampled)
         
         // Individual toggles for each early-out reason color
-        bool showBehindCamera = true;      // Magenta - earlyOutReason 1
-        bool showInvalidRadius = true;     // Dark Yellow - earlyOutReason 2
-        bool showCameraInside = true;      // Orange - earlyOutReason 4
-        bool showInvalidDepth = true;      // Pink - earlyOutReason 5
-        bool showNearestOffscreen = true;  // Yellow - earlyOutReason 6
-        bool showVisible = true;           // Green - earlyOutReason 0
-        bool showOccluded = true;          // Red - earlyOutReason -1 (0xFFFFFFFF)
+        bool showVisTestPassed = true;
+        bool showVisInsideBounds = true;
+        bool showVisInvalidRadius = true;
+        bool showCulledFrustum = true;
+        bool showCulledNoEarlyOut = true;
     };
 
     Settings settings;
@@ -148,9 +147,15 @@ struct HiZOcclusion : OverlayFeature
     inline uint32_t GetHiZMipCount() const { return hiZMipCount; }
     
     // Debugging result struct (x = object depth, y = max scene depth)
+
+    // -3 = Not culled: Test passed
+    // -2 = Not culled: Inside bounds
+    // -1 = Not culled: Invalid Radius
+    //  0 = Default value
+    //  1 = Culled: Frustum
+    //  2 = Culled: No early out
     struct OcclusionResult {
-        float objectDepth;
-        float sceneDepth;
+        uint32_t result;
     };
     
     // Comprehensive debug data from GPU (matches shader DebugData struct)
@@ -165,26 +170,22 @@ struct HiZOcclusion : OverlayFeature
     // Culling statistics
     struct CullingStats {
         uint32_t totalTested = 0;
-        uint32_t culled = 0;
-        uint32_t visible = 0;
         uint32_t frameIndex = 0;
         uint32_t geometryListSize = 0;
         
-        // Per early-out reason statistics
-        uint32_t behindCamera = 0;       // earlyOutReason 1
-        uint32_t invalidRadius = 0;      // earlyOutReason 2
-        uint32_t cameraInside = 0;       // earlyOutReason 4
-        uint32_t invalidDepth = 0;       // earlyOutReason 5
-        uint32_t nearestOffscreen = 0;   // earlyOutReason 6
-        uint32_t visibleCount = 0;       // earlyOutReason 0
-        uint32_t occludedCount = 0;      // earlyOutReason -1
+        // Test result statistics
+        uint32_t visTestPassed = 0;
+        uint32_t visInsideBounds = 0;
+        uint32_t visInvalidRadius = 0;
+        uint32_t defaultValue = 0;
+        uint32_t culledFrustum = 0;
+        uint32_t culledNoEarlyOut = 0;
         
         // Timing statistics (in milliseconds)
         float resourceSetupDurationMS = 0.0f;
         float recreateDurationMS = 0.0f;
         float gpuCullingTimeMs = 0.0f;
         float hiZBuildTimeMs = 0.0f;
-        float geometryProcessingTimeMs = 0.0f;
         float readbackTimeMs = 0.0f;
         float copyTimeMs = 0.0f;
         float mapTimeMs = 0.0f;
