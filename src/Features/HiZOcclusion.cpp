@@ -1843,6 +1843,40 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
             shouldShow = true;  // Always show small objects (if not already visible)
         }
 
+        // Check for physics-related extra data on the geometry or its parents
+        if (shouldHide) {
+            bool isPhysicsObject = false;
+            RE::NiAVObject* node = geo;
+            while (node) {
+                // Check node's own name for physics-related substrings
+                if (!node->name.empty()) {
+                    const char* nodeName = node->name.c_str();
+                    if (strstr(nodeName, "HDT") != nullptr ||
+                        strstr(nodeName, "SMP") != nullptr ||
+                        strstr(nodeName, "XPMSE") != nullptr)
+                    {
+                        isPhysicsObject = true;
+                        break;
+                    }
+                }
+
+                // Existing check for extra data
+                if (node->GetExtraData("XPMSE") || node->GetExtraData("HDT") || node->GetExtraData("SMP")) {
+                    isPhysicsObject = true;
+                    break;
+                }
+                if (isPhysicsObject) {
+                    break;
+                }
+                node = node->parent;
+            }
+
+            if (isPhysicsObject) {
+                shouldHide = false;
+                shouldShow = true;
+            }
+        }
+
         if (shouldHide) {
             geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
             temporal.wasVisible = false;
