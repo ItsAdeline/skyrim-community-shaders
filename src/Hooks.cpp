@@ -706,20 +706,26 @@ namespace Hooks
 					goto helpers;
 				}
 
-				func(shader, material);
+				if (shader && material) { // Add null checks here
+					func(shader, material);
+				}
 			}
 
 		helpers:
 			// terrain helper
 			auto& terrainHelper = globals::features::terrainHelper;
 			if (terrainHelper.loaded) {
-				terrainHelper.BSLightingShader_SetupMaterial(material);
+				if (material) { // Add null check here
+					terrainHelper.BSLightingShader_SetupMaterial(material);
+				}
 			}
 
 			// advanced skin
 			auto& skin = globals::features::skin;
 			if (skin.loaded && skin.settings.EnableSkin) {
-				skin.BSLightingShader_SetupMaterial(material);
+				if (material) { // Add null check here
+					skin.BSLightingShader_SetupMaterial(material);
+				}
 			}
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -732,10 +738,10 @@ namespace Hooks
 			// Collect valid geometry for next frame's testing
 			if (globals::features::hiZOcclusion.settings.enableHiZCulling && pass->geometry && pass->geometry->worldBound.radius > 0.0f) {
 				// Fast O(1) check
-				if (globals::features::hiZOcclusion.pendingGeometrySet.insert(pass->geometry).second) {
+                RE::NiPointer<RE::BSGeometry> geoPtr(pass->geometry);
+				if (globals::features::hiZOcclusion.pendingGeometrySet.insert(geoPtr).second) {
 					// Was inserted (not duplicate), add to vector too
-					auto* rawGeometry = pass->geometry;
-					globals::features::hiZOcclusion.pendingGeometry.emplace_back(rawGeometry);
+					globals::features::hiZOcclusion.pendingGeometry.push_back(geoPtr);
 				}
 			}
 			
