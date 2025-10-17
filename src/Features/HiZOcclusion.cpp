@@ -428,6 +428,21 @@ void HiZOcclusion::ClearShaderCache()
     if (hiZTestCS) { hiZTestCS->Release(); hiZTestCS = nullptr; }
 }
 
+void HiZOcclusion::Reset()
+{
+    if (!settings.enableHiZCulling) {
+        if (wasEnabled) {
+            // Uncull all hidden geometries
+            // Release and clear all resources
+            wasEnabled = false;
+        }
+    } else {
+        if (!wasEnabled) {
+            wasEnabled = true;
+        }
+    }
+}
+
 void HiZOcclusion::EarlyPrepass()
 {
     if (settings.debugMode) {
@@ -1289,161 +1304,6 @@ void HiZOcclusion::UnbindD3DResources()
     context->CSSetShader(nullptr, nullptr, 0);
     context->CSSetSamplers(0, 1, nullSamplers);
     context->CSSetConstantBuffers(0, 1, nullCBs);
-}
-
-void HiZOcclusion::VerifyDepthBufferContents()
-{
-    if (!settings.debugMode) return;
-    
-    auto renderer = RE::BSGraphics::Renderer::GetSingleton();
-    if (!renderer) return;
-    
-    auto context = globals::d3d::context;
-    if (!context) return;
-    
-    // Get the depth buffer we're using for HiZ
-    auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-    if (!depth.depthSRV || !depth.texture) return;
-    
-    // Create a staging texture to read back depth values
-    D3D11_TEXTURE2D_DESC depthDesc{};
-    depth.texture->GetDesc(&depthDesc);
-    
-    D3D11_TEXTURE2D_DESC stagingDesc = depthDesc;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.MiscFlags = 0;
-    
-    ID3D11Texture2D* stagingTexture = nullptr;
-    HRESULT hr = globals::d3d::device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
-    if (FAILED(hr) || !stagingTexture) {
-        logger::warn("Failed to create staging texture for depth verification");
-        return;
-    }
-    
-    // Copy depth buffer to staging
-    context->CopyResource(stagingTexture, depth.texture);
-    
-    // Map and sample a few key positions
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    hr = context->Map(stagingTexture, 0, D3D11_MAP_READ, 0, &mapped);
-    if (SUCCEEDED(hr)) {
-        // Sample center, corners, and a few random positions
-        uint32_t centerX = depthDesc.Width / 2;
-        uint32_t centerY = depthDesc.Height / 2;
-        
-        auto sampleDepth = [&](uint32_t x, uint32_t y) -> float {
-            if (x >= depthDesc.Width || y >= depthDesc.Height) return -1.0f;
-            
-            uint8_t* row = static_cast<uint8_t*>(mapped.pData) + y * mapped.RowPitch;
-            
-            // Handle different depth formats
-            if (depthDesc.Format == DXGI_FORMAT_R32_FLOAT) {
-                return *reinterpret_cast<float*>(row + x * 4);
-            } else if (depthDesc.Format == DXGI_FORMAT_R24_UNORM_X8_TYPELESS) {
-                uint32_t packed = *reinterpret_cast<uint32_t*>(row + x * 4);
-                return (packed & 0xFFFFFF) / float(0xFFFFFF);
-            } else if (depthDesc.Format == 44) {  // DXGI_FORMAT_D24_UNORM_S8_UINT
-                uint32_t packed = *reinterpret_cast<uint32_t*>(row + x * 4);
-                return (packed & 0xFFFFFF) / float(0xFFFFFF);  // Extract 24-bit depth, ignore 8-bit stencil
-            } else if (depthDesc.Format == DXGI_FORMAT_R16_UNORM) {
-                uint16_t depth16 = *reinterpret_cast<uint16_t*>(row + x * 2);
-                return depth16 / 65535.0f;
-            }
-            logger::warn("Unsupported depth format: {}", static_cast<int>(depthDesc.Format));
-            return -1.0f;
-        };
-        
-        float centerDepth = sampleDepth(centerX, centerY);
-        float topLeftDepth = sampleDepth(depthDesc.Width / 4, depthDesc.Height / 4);
-        float topRightDepth = sampleDepth(3 * depthDesc.Width / 4, depthDesc.Height / 4);
-        float bottomLeftDepth = sampleDepth(depthDesc.Width / 4, 3 * depthDesc.Height / 4);
-        float bottomRightDepth = sampleDepth(3 * depthDesc.Width / 4, 3 * depthDesc.Height / 4);
-        
-        logger::info("Frame {} - Depth Buffer Verification:", globals::state->frameCount);
-        logger::info("  Center ({}, {}): {}", centerX, centerY, centerDepth);
-        logger::info("  TopLeft: {}, TopRight: {}", topLeftDepth, topRightDepth);
-        logger::info("  BottomLeft: {}, BottomRight: {}", bottomLeftDepth, bottomRightDepth);
-        
-        // Check for suspicious values
-        if (centerDepth <= 0.0f || centerDepth >= 1.0f) {
-            logger::warn("Suspicious center depth value: {}", centerDepth);
-        }
-        
-        // Check if all depths are the same (might indicate stale/cleared buffer)
-        if (centerDepth == topLeftDepth && centerDepth == topRightDepth && 
-            centerDepth == bottomLeftDepth && centerDepth == bottomRightDepth) {
-            logger::warn("All sampled depths are identical ({}), buffer might be cleared/stale", centerDepth);
-        }
-        
-        context->Unmap(stagingTexture, 0);
-    } else {
-        logger::warn("Failed to map staging texture for depth verification");
-    }
-    
-    stagingTexture->Release();
-}
-
-void HiZOcclusion::UpdatePerformanceMetrics()
-{
-    // Calculate current frame metrics
-    if (stats.totalTested > 0) {
-        stats.cullingEfficiency = (float(stats.culled) / float(stats.totalTested)) * 100.0f;
-    } else {
-        stats.cullingEfficiency = 0.0f;
-    }
-    
-    // Calculate total overhead (sum of all timing components)
-    stats.cullingOverheadMs = stats.hiZBuildTimeMs + stats.geometryProcessingTimeMs + 
-                             stats.gpuCullingTimeMs + stats.readbackTimeMs;
-    
-    // Calculate geometry processing rate
-    if (stats.cullingOverheadMs > 0.0f) {
-        stats.avgGeometryPerMs = float(stats.totalTested) / stats.cullingOverheadMs;
-    } else {
-        stats.avgGeometryPerMs = 0.0f;
-    }
-    
-    // Update running averages (maintain last 60 frames)
-    stats.recentEfficiency.push_back(stats.cullingEfficiency);
-    stats.recentOverhead.push_back(stats.cullingOverheadMs);
-    stats.recentGeometryCount.push_back(stats.totalTested);
-    
-    // Trim to max history size
-    if (stats.recentEfficiency.size() > stats.maxHistoryFrames) {
-        stats.recentEfficiency.erase(stats.recentEfficiency.begin());
-        stats.recentOverhead.erase(stats.recentOverhead.begin());
-        stats.recentGeometryCount.erase(stats.recentGeometryCount.begin());
-    }
-    
-    // Calculate running averages
-    if (!stats.recentEfficiency.empty()) {
-        float sumEfficiency = 0.0f;
-        float sumOverhead = 0.0f;
-        uint32_t sumGeometry = 0;
-        
-        for (size_t i = 0; i < stats.recentEfficiency.size(); ++i) {
-            sumEfficiency += stats.recentEfficiency[i];
-            sumOverhead += stats.recentOverhead[i];
-            sumGeometry += stats.recentGeometryCount[i];
-        }
-        
-        size_t frameCount = stats.recentEfficiency.size();
-        stats.avgCullingEfficiency = sumEfficiency / float(frameCount);
-        stats.avgOverheadMs = sumOverhead / float(frameCount);
-        stats.avgGeometryCount = float(sumGeometry) / float(frameCount);
-    }
-    
-    // Log performance summary every 60 frames when debug mode is enabled
-    if (settings.debugMode && (currentFrame % 60 == 0) && !stats.recentEfficiency.empty()) {
-        logger::info("HiZ Performance Summary (last {} frames):", stats.recentEfficiency.size());
-        logger::info("  Avg Overhead: {:.3f}ms", stats.avgOverheadMs);
-        logger::info("  Avg Geometry Count: {:.0f}", stats.avgGeometryCount);
-        logger::info("  Avg Processing Rate: {:.0f} geo/ms", 
-                    stats.avgGeometryCount > 0 ? stats.avgGeometryCount / std::max(stats.avgOverheadMs, 0.001f) : 0.0f);
-        logger::info("  Points Tested Per Object: {}", stats.pointsTestedPerObject);
-    }
 }
 
 void HiZOcclusion::DispatchComputeShader() {

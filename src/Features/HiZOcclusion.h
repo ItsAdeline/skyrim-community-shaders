@@ -27,6 +27,9 @@ struct HiZOcclusion : OverlayFeature
     void UnbindD3DResources();
     virtual void EarlyPrepass() override;
     void Prepass();
+    void Reset();
+
+    bool wasEnabled = false;
 
     void CreateDebugBuffer();
     void ReleaseDebugBuffer();
@@ -41,7 +44,6 @@ struct HiZOcclusion : OverlayFeature
     virtual void DrawOverlay() override;
     virtual bool IsOverlayVisible() const override;
 
-    void NewFrame();
     uint32_t currentFrame = 0;
 
 	std::string status = "init";     // status message for debug display
@@ -82,15 +84,6 @@ struct HiZOcclusion : OverlayFeature
     };
 
     Settings settings;
-
-    struct CameraMatrices {
-        DirectX::XMFLOAT4X4 view;   // row-major
-        DirectX::XMFLOAT4X4 proj;   // row-major
-        DirectX::XMFLOAT4X4 viewProj; // optional but handy
-    };
-    
-    CameraMatrices prevframeCam = {};
-    bool prevframeCamDataValid = false;
 
     // Hi-Z pyramid resources
     ID3D11Texture2D* hiZTexture = nullptr;                       // R32_FLOAT, full mip chain
@@ -167,28 +160,6 @@ struct HiZOcclusion : OverlayFeature
         float sceneDepth;
         uint32_t earlyOutReason;
         DirectX::XMFLOAT2 padding;               // Total: 48 bytes
-    };
-    
-    // Depth buffer verification
-    void VerifyDepthBufferContents();
-    
-    // Performance metrics calculation
-    void UpdatePerformanceMetrics();
-    
-    // Timing utility for performance measurement
-    class ScopedTimer {
-    public:
-        ScopedTimer(float& target) : target_(target) {
-            start_ = std::chrono::high_resolution_clock::now();
-        }
-        ~ScopedTimer() {
-            auto end = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_);
-            target_ = duration.count() / 1000.0f; // Convert to milliseconds
-        }
-    private:
-        float& target_;
-        std::chrono::high_resolution_clock::time_point start_;
     };
 
     // Culling statistics
