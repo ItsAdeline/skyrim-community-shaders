@@ -22,6 +22,7 @@
 #include <RE/N/NiAVObject.h>
 #include <RE/N/NiBound.h>
 #include <RE/S/ShaderAccumulator.h>
+#include <RE/N/NiSmartPointer.h>
 
 #include "Features/HiZOcclusion.h"
 
@@ -733,7 +734,8 @@ namespace Hooks
 				// Fast O(1) check
 				if (globals::features::hiZOcclusion.pendingGeometrySet.insert(pass->geometry).second) {
 					// Was inserted (not duplicate), add to vector too
-					globals::features::hiZOcclusion.pendingGeometry.push_back(pass->geometry);
+					auto* rawGeometry = pass->geometry;
+					globals::features::hiZOcclusion.pendingGeometry.emplace_back(rawGeometry);
 				}
 			}
 			
