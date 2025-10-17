@@ -580,17 +580,28 @@ void HiZOcclusion::ResetCulled()
 {
     // Reset hidden flag for all geometries that were culled
     if (!unCullNextFrame.empty()) {
+        // Create a new vector to store valid objects
+        std::vector<RE::BSGeometry*> validUnCull;
+        validUnCull.reserve(unCullNextFrame.size());
+
         for (auto* g : unCullNextFrame) {
             // Add robust validity check before accessing g
             if (g && g->parent) {
                 g->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                validUnCull.push_back(g); // Keep valid objects
             } else {
                 if (settings.debugMode) {
                     logger::warn("HiZOcclusion: Skipping invalid geometry object in ResetCulled() (null geo or parent)");
                 }
+                // If object is invalid, remove it from temporalStates
+                auto it = temporalStates.find(g);
+                if (it != temporalStates.end()) {
+                    temporalStates.erase(it);
+                }
             }
         }
-        unCullNextFrame.clear();
+        // Replace the old list with the cleaned list
+        unCullNextFrame = std::move(validUnCull);
     }
 }
 
@@ -1904,7 +1915,7 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
         bool shouldShow = (temporal.confidence > uncullThreshold && !temporal.wasVisible);
 
         // If object is smaller than minCullRadius, always treat as visible
-        if (geometrySnapshot[i]->worldBound.radius < settings.minCullRadius) {
+        if (geo->worldBound.radius < settings.minCullRadius) {
             shouldHide = false; // Never hide small objects
             shouldShow = true;  // Always show small objects (if not already visible)
         }
