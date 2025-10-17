@@ -760,15 +760,8 @@ bool HiZOcclusion::InitHiZResources()
 		return false;
 	}
 
-<<<<<<< HEAD
     uint32_t desiredW, desiredH;
     if (globals::features::upscaling.loaded && globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kNONE) {
-=======
-    uint32_t desiredW;
-    uint32_t desiredH;
-
-    if (globals::features::upscaling.loaded && !((Upscaling::UpscaleMethod)globals::features::upscaling.settings.upscaleMethod == Upscaling::UpscaleMethod::kNONE)) {
->>>>>>> soda3000/culling
         uint32_t displayW = static_cast<uint32_t>(globals::state->screenSize.x);
         uint32_t displayH = static_cast<uint32_t>(globals::state->screenSize.y);
         desiredW = static_cast<uint32_t>(displayW * globals::features::upscaling.dynamicResolutionWidthRatio);
@@ -1721,7 +1714,6 @@ void HiZOcclusion::DispatchComputeShader() {
         params.bufferDim = { (float)texDesc.Width, (float)texDesc.Height };
         params.bufferDimInv = { 1.0f / params.bufferDim.x, 1.0f / params.bufferDim.y };
 
-<<<<<<< HEAD
         if (globals::features::upscaling.loaded && globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kNONE) {
             params.upscalingRatio = { globals::features::upscaling.dynamicResolutionWidthRatio, globals::features::upscaling.dynamicResolutionHeightRatio };
         } else {
@@ -1729,9 +1721,6 @@ void HiZOcclusion::DispatchComputeShader() {
         }
 
         //logger::info("HiZ Params - BufferDimInv: [{}, {}]", params.bufferDimInv.x, params.bufferDimInv.y);
-
-=======
->>>>>>> soda3000/culling
         if (SUCCEEDED(context->Map(hiZTestParamsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             memcpy(mapped.pData, &params, sizeof(HiZSettings));
             context->Unmap(hiZTestParamsBuffer, 0);
