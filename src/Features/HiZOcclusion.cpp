@@ -401,7 +401,13 @@ void HiZOcclusion::Reset()
             }
             // Empty pending geometry list
             if (!pendingGeometry.empty()) {
+                for (auto& geometry : pendingGeometry) {
+                    if (geometry) {
+                        geometry->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                    }
+                }
                 pendingGeometry.clear();
+				pendingGeometrySet.clear();
             }
             // Release and clear all resources
             ReleaseBoundsOverlayResources();
@@ -504,6 +510,7 @@ void HiZOcclusion::Prepass()
                 pendingGeometrySet.insert(rawGeo);
             }
         }
+        unCullNextFrame.clear();
     }
 
     if (readbackState.numPendingReads > 0 || !pendingGeometry.empty()) {
@@ -1332,7 +1339,6 @@ void HiZOcclusion::DispatchComputeShader()
 
 void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
 
-    unCullNextFrame.clear();
 
     // Read from the correct triple-buffered staging buffer
     const HiZOcclusion::OcclusionResult* visibilityData = static_cast<const HiZOcclusion::OcclusionResult*>(readbackState.mappedData[bufferIndex].pData);
