@@ -739,7 +739,7 @@ namespace Hooks
 			if (globals::features::hiZOcclusion.settings.enableHiZCulling && pass->geometry && pass->geometry->worldBound.radius > 0.0f) {
 				// Fast O(1) check
                 RE::NiPointer<RE::BSGeometry> geoPtr(pass->geometry);
-				if (globals::features::hiZOcclusion.pendingGeometrySet.insert(geoPtr).second) {
+				if (globals::features::hiZOcclusion.pendingGeometrySet.insert(geoPtr.get()).second) {
 					// Was inserted (not duplicate), add to vector too
 					globals::features::hiZOcclusion.pendingGeometry.push_back(geoPtr);
 				}
