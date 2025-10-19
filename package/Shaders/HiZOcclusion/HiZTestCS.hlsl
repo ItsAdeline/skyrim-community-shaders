@@ -100,7 +100,8 @@ void DrawBounds(uint geometryIndex, float3 centerVS, float radius) {
         shouldDraw = true;
     }
     
-    if (!shouldDraw) return;  // Early exit if this color is filtered out
+    // Early exit if this color is filtered out, or frustum culled.
+    if (!shouldDraw || VisibilityResults[geometryIndex] == 1) return;  
     
     // Compute base dimensions
     uint baseW, baseH, mipCount;
@@ -274,12 +275,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         mipLevel = GetMipLevel(centerVS, radius);
     }
 
-    bool centerOnScreen = false;
-    float2 centerUV = FrameBuffer::ViewToUV(centerVS);
-    if (!FrameBuffer::IsOutsideFrame(centerUV)) {
-        centerOnScreen = true;
-    }
-
     float conservativeBias = HiZSettings.y;
 
     static const float3 offsets[26] = {
@@ -294,18 +289,91 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         float3( 1,  1, -1), float3( 1,  1,  0), float3( 1,  1,  1)
     };
 
-    static const int maxTestPoints = 27;
+    static const int maxTestPoints = 256;
     float3 validPointsVS[maxTestPoints];
     float2 validPointsUV[maxTestPoints];
     float validPointsDepth[maxTestPoints];
     int validPointCount = 0;
+    int totalValidPoints = 0;
 
-    if (centerOnScreen) {
+    if (centerVS.z > 0.0) {
         validPointsVS[validPointCount] = centerVS;
-        validPointsUV[validPointCount] = centerUV;
+        validPointsUV[validPointCount] = clamp(FrameBuffer::ViewToUV(centerVS), float2(0.0, 0.0), float2(1.0, 1.0));
         float4 centerClip = mul(FrameBuffer::CameraProj[0], float4(centerVS, 1));
         validPointsDepth[validPointCount] = centerClip.z / centerClip.w;
         validPointCount++;
+        totalValidPoints++;
+        // Also add nearest sphere point
+        float3 normalDir = -normalize(centerVS);
+        float3 nearestSpherePoint = centerVS + normalDir * radius;
+        if (nearestSpherePoint.z > 0.0) {
+            float4 nearestSphereClip = mul(FrameBuffer::CameraProj[0], float4(nearestSpherePoint, 1));
+            float nearestSphereDepth = nearestSphereClip.z / nearestSphereClip.w;
+            validPointsVS[validPointCount] = nearestSpherePoint;
+            validPointsUV[validPointCount] = clamp(FrameBuffer::ViewToUV(nearestSpherePoint), float2(0.0, 0.0), float2(1.0, 1.0));
+            validPointsDepth[validPointCount] = nearestSphereDepth;
+            validPointCount++;
+            totalValidPoints++;
+        }
+    }
+
+    // Test the center and nearest sphere points against Hi-Z depth.
+    if (validPointCount != 0) {
+        for (int i = 0; i < validPointCount; ++i) {
+            float3 pointVS = validPointsVS[i];
+            float2 pointUV = validPointsUV[i];
+            float pointDepth = validPointsDepth[i];
+
+            float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
+            if (pointDepth <= hiZDepth + conservativeBias) {
+                VisibilityResults[geometryIndex] = -3;
+                ReportVisibleGeometry(geometryIndex, centerVS, radius);
+                return;
+            }
+        }
+        // Reset validPointCount to avoid retesting later
+        validPointCount = 0;
+    }
+
+    // Check for the 4 cardinal points of the bounds
+    float3 cardinalPoints[4] = {
+        float3(centerVS.x + radius, centerVS.y, centerVS.z),
+        float3(centerVS.x - radius, centerVS.y, centerVS.z),
+        float3(centerVS.x, centerVS.y + radius, centerVS.z),
+        float3(centerVS.x, centerVS.y - radius, centerVS.z)
+    };
+    for (int i = 0; i < 4; ++i) {
+        float3 pointVS = cardinalPoints[i];
+        float3 normalCardinalDir = -normalize(pointVS);
+        float3 nearestCardinalPoint = pointVS + normalCardinalDir * radius;
+        if (nearestCardinalPoint.z <= 0.0) {
+            continue;
+        }
+        float4 nearestCardinalClip = mul(FrameBuffer::CameraProj[0], float4(nearestCardinalPoint, 1));
+        float nearestCardinalDepth = nearestCardinalClip.z / nearestCardinalClip.w;
+        validPointsVS[validPointCount] = nearestCardinalPoint;
+        validPointsUV[validPointCount] = clamp(FrameBuffer::ViewToUV(nearestCardinalPoint), float2(0.0, 0.0), float2(1.0, 1.0));
+        validPointsDepth[validPointCount] = nearestCardinalDepth;
+        validPointCount++;
+        totalValidPoints++;
+    }
+
+    // Test the valid cardinal points against Hi-Z depth.
+    if (validPointCount != 0) {
+        for (int i = 0; i < validPointCount; ++i) {
+            float3 pointVS = validPointsVS[i];
+            float2 pointUV = validPointsUV[i];
+            float pointDepth = validPointsDepth[i];
+
+            float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
+            if (pointDepth <= hiZDepth + conservativeBias) {
+                VisibilityResults[geometryIndex] = -3;
+                ReportVisibleGeometry(geometryIndex, centerVS, radius);
+                return;
+            }
+        }
+        // Reset validPointCount to avoid retesting later
+        validPointCount = 0;
     }
 
     // Find out which points are on screen.
@@ -313,7 +381,6 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
         float3 dir3 = offsets[i];
         float lenSq = dot(dir3, dir3);
         float3 unitDir = dir3 * rsqrt(max(lenSq, 1e-12));
-
         float3 pointVS = centerVS + unitDir * radius;
 
         if (pointVS.z <= 0.0) {
@@ -322,25 +389,114 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
         float4 pointClip = mul(FrameBuffer::CameraProj[0], float4(pointVS, 1));
         float pointDepth = pointClip.z / pointClip.w;
-        if (pointDepth < 0.0 || pointDepth > 1.0) {
-            continue;
-        }
-
-        float2 pointUV = FrameBuffer::ViewToUV(pointVS);
-        if (FrameBuffer::IsOutsideFrame(pointUV)) {
-            continue;
-        }
+        float2 pointUV = clamp(FrameBuffer::ViewToUV(pointVS), float2(0.0, 0.0), float2(1.0, 1.0));
 
         if (validPointCount < maxTestPoints) {
             validPointsVS[validPointCount] = pointVS;
             validPointsUV[validPointCount] = pointUV;
             validPointsDepth[validPointCount] = pointDepth;
             validPointCount++;
+            totalValidPoints++;
         }
     }
 
-    // No points on screen = cull: frustum
-    if (validPointCount == 0) {
+    // If any of the points are on screen, test them against Hi-Z depth.
+    if (validPointCount != 0) {
+        for (int i = 0; i < validPointCount; ++i) {
+            float3 pointVS = validPointsVS[i];
+            float2 pointUV = validPointsUV[i];
+            float pointDepth = validPointsDepth[i];
+
+            float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
+            if (pointDepth <= hiZDepth + conservativeBias) {
+                VisibilityResults[geometryIndex] = -3;
+                ReportVisibleGeometry(geometryIndex, centerVS, radius);
+                return;
+            }
+        }
+        // Reset validPointCount to avoid retesting later
+        validPointCount = 0;
+    }
+
+    // Decrease radius size by 50%, then test those points.
+    {
+        float radiusSmall = radius * 0.5;
+        for (int i = 0; i < 26; ++i) {
+            float3 dir3 = offsets[i];
+            float lenSq = dot(dir3, dir3);
+            float3 unitDir = dir3 * rsqrt(max(lenSq, 1e-12));
+
+            float3 pointVS = centerVS + unitDir * radiusSmall;
+
+            if (pointVS.z <= 0.0) {
+                continue;
+            }
+
+            float4 pointClip = mul(FrameBuffer::CameraProj[0], float4(pointVS, 1));
+            float pointDepth = pointClip.z / pointClip.w;
+
+            float2 pointUV = clamp(FrameBuffer::ViewToUV(pointVS), float2(0.0, 0.0), float2(1.0, 1.0));
+
+            if (validPointCount < maxTestPoints) {
+                validPointsVS[validPointCount] = pointVS;
+                validPointsUV[validPointCount] = pointUV;
+                validPointsDepth[validPointCount] = pointDepth;
+                validPointCount++;
+                totalValidPoints++;
+            }
+        }
+    }
+
+    // If any of the points are on screen, test them against Hi-Z depth.
+    if (validPointCount != 0) {
+        for (int i = 0; i < validPointCount; ++i) {
+            float3 pointVS = validPointsVS[i];
+            float2 pointUV = validPointsUV[i];
+            float pointDepth = validPointsDepth[i];
+
+            float hiZDepth = HiZBuffer.SampleLevel(HiZSampler, pointUV, mipLevel).r;
+            if (pointDepth <= hiZDepth + conservativeBias) {
+                VisibilityResults[geometryIndex] = -3;
+                ReportVisibleGeometry(geometryIndex, centerVS, radius);
+                return;
+            }
+        }
+        // Reset validPointCount to avoid retesting later
+        validPointCount = 0;
+    }
+
+    // increase radius size by 50%, then check if those points are on screen.
+    // This will help reduce sudden pop-in by conserving geometry which is just barely hidden.
+    {
+        float radiusLarge = radius * 1.5;
+        for (int i = 0; i < 26; ++i) {
+            float3 dir3 = offsets[i];
+            float lenSq = dot(dir3, dir3);
+            float3 unitDir = dir3 * rsqrt(max(lenSq, 1e-12));
+
+            float3 pointVS = centerVS + unitDir * radiusLarge;
+
+            if (pointVS.z <= 0.0) {
+                continue;
+            }
+
+            float4 pointClip = mul(FrameBuffer::CameraProj[0], float4(pointVS, 1));
+            float pointDepth = pointClip.z / pointClip.w;
+
+            float2 pointUV = clamp(FrameBuffer::ViewToUV(pointVS), float2(0.0, 0.0), float2(1.0, 1.0));
+
+            if (validPointCount < maxTestPoints) {
+                validPointsVS[validPointCount] = pointVS;
+                validPointsUV[validPointCount] = pointUV;
+                validPointsDepth[validPointCount] = pointDepth;
+                validPointCount++;
+                totalValidPoints++;
+            }
+        }
+    }
+
+    // If not a single point was found on screen, then frustum cull
+    if (totalValidPoints == 0) {
         VisibilityResults[geometryIndex] = 1;
         if (overlaySettings.x != 0 && geometryIndex < (uint)overlaySettings.y) {
             DrawBounds(geometryIndex, centerVS, radius);

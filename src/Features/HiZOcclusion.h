@@ -57,6 +57,7 @@ struct HiZOcclusion : OverlayFeature
     bool preserveResourcesForUI = true;  // prevent Reset() from destroying resources needed for debug viewer
     uint32_t resourceCreationFrame = 0;  // frame when resources were last created
     bool skipValidationThisFrame = false; // skip resource validation to prevent crashes during compilation
+    bool overlayUpdatedThisFrame = false; // tracks whether bounds overlay was refreshed this frame
 
     struct Settings {
         // Debug viewer settings
@@ -229,7 +230,6 @@ struct HiZOcclusion : OverlayFeature
     uint32_t numGeometry = 0;  // Number of geometry objects in current batch
     uint32_t numGeometryPending = 0;  // Number of geometry in pending results
     std::vector<RE::NiPointer<RE::BSGeometry>> pendingGeometrySnapshot;  // Snapshot for current dispatch
-    std::vector<RE::NiPointer<RE::BSGeometry>> pendingGeometryResults;  // Snapshot for async result processing
     
     // Geometry batch for GPU culling
     std::vector<RE::NiPointer<RE::BSGeometry>> pendingGeometry;
