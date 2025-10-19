@@ -96,7 +96,6 @@ void HiZOcclusion::ClearBoundsOverlay() {
 
 void HiZOcclusion::DrawSettings()
 {
-    // logger::info("Drawing Hi-Z settings (frame={})", currentFrame);
     if (ImGui::TreeNodeEx("Hi-Z Viewer", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Show viewer window", &settings.enableHiZViewer);
         if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -206,19 +205,16 @@ void HiZOcclusion::DrawSettings()
     
     // Hi-Z Culling Settings
     if (ImGui::TreeNodeEx("Hi-Z Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (ImGui::Checkbox("Enable Hi-Z Culling", &settings.enableHiZCulling)) {
-            logger::info("Hi-Z culling toggled: {}", settings.enableHiZCulling);
+        ImGui::Checkbox("Enable Hi-Z Culling", &settings.enableHiZCulling);
+        ImGui::SameLine();
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            ImGui::SetTooltip("Enable Hi-Z Culling system");
         }
-        ImGui::SliderFloat("Conservative Bias", &settings.conservativeBias, -1.0f, 1.0f, "%.3f");
-        
-        if (ImGui::Checkbox("Show Culling Stats", &settings.showCullingStats)) {
-            logger::info("Culling stats display toggled: {}", settings.showCullingStats);
+        ImGui::SliderFloat("Conservative Bias", &settings.conservativeBias, 0.0f, 1.0f, "%.4f");
+        ImGui::SameLine();
+        if (auto _tt = Util::HoverTooltipWrapper()) {
+            ImGui::SetTooltip("Conservative bias for Hi-Z Culling. \nHigher values are more conservative, lower values are more aggressive.");
         }
-        
-        if (ImGui::Checkbox("Debug Mode", &settings.debugMode)) {
-            logger::info("Debug mode toggled: {}", settings.debugMode);
-        }
-        
         ImGui::TreePop();
     }
 
@@ -310,9 +306,7 @@ void HiZOcclusion::SetupResources()
 }
 
 void HiZOcclusion::InitShaders()
-{
-    logger::info("Initializing HiZ shaders (frame={})", globals::state ? globals::state->frameCount : 0);
-    
+{  
     // Ensure we have a valid device before attempting shader compilation
     auto device = globals::d3d::device;
     if (!device) {
@@ -330,7 +324,6 @@ void HiZOcclusion::InitShaders()
                 logger::error("{}", status);
                 return;
             }
-            else { logger::info("compiled HiZBuildLevel0CS"); }
         } catch (const std::exception& e) {
             status = "exception during HiZBuildLevel0CS compilation";
             logger::error("{}: {}", status, e.what());
@@ -346,7 +339,6 @@ void HiZOcclusion::InitShaders()
                 logger::error("{}", status);
                 return;
             }
-            else { logger::info("compiled HiZDownsampleCS"); }
         } catch (const std::exception& e) {
             status = "exception during HiZDownsampleCS compilation";
             logger::error("{}: {}", status, e.what());
@@ -362,7 +354,6 @@ void HiZOcclusion::InitShaders()
                 logger::error("{}", status);
                 return;
             }
-            else { logger::info("compiled HiZTestCS"); }
         } catch (const std::exception& e) {
             status = "exception during HiZTestCS compilation";
             logger::error("{}: {}", status, e.what());
@@ -372,7 +363,6 @@ void HiZOcclusion::InitShaders()
     
     resourcesSetup = true;
     status = "shaders_compiled";
-    logger::info("HiZ shader compilation completed successfully");
     
     // Skip resource validation for a few frames after shader compilation
     // to avoid crashes during device state transitions
@@ -438,7 +428,7 @@ void HiZOcclusion::EarlyPrepass()
 
 void HiZOcclusion::Prepass()
 {
-    logger::info("Frame {} - HiZOcclusion::Prepass", globals::state->frameCount);
+
     if (!settings.enableHiZCulling) {
         return;
     }
@@ -456,6 +446,10 @@ void HiZOcclusion::Prepass()
     stats.defaultValue = 0;
     stats.culledFrustum = 0;
     stats.culledNoEarlyOut = 0;
+
+    if (settings.enableBoundsViewer && boundsOverlayUAV) {
+        overlayUpdatedThisFrame = false;
+    }
 
     if (!resourcesSetup) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -520,6 +514,10 @@ void HiZOcclusion::Prepass()
         logger::debug("Frame {} - No pending geometry to process in Prepass", globals::state->frameCount);
     }
 
+    if (settings.enableBoundsViewer && boundsOverlayUAV && !overlayUpdatedThisFrame) {
+        ClearBoundsOverlay();
+    }
+
     UnbindD3DResources();
 
     status = "HiZ Tests executed";
@@ -548,9 +546,6 @@ bool HiZOcclusion::InitHiZResources()
     // Log depth buffer properties
     D3D11_TEXTURE2D_DESC depthTexDesc{};
     depth.texture->GetDesc(&depthTexDesc);
-    logger::info("Depth buffer: {}x{}, Format: {}, MipLevels: {}", 
-                depthTexDesc.Width, depthTexDesc.Height, 
-                static_cast<int>(depthTexDesc.Format), depthTexDesc.MipLevels);
 
     D3D11_SHADER_RESOURCE_VIEW_DESC depthSRVDesc{};
     depth.depthSRV->GetDesc(&depthSRVDesc);
@@ -582,11 +577,9 @@ bool HiZOcclusion::InitHiZResources()
         // Ensure dimensions are at least 1
         desiredW = std::max(1u, desiredW);
         desiredH = std::max(1u, desiredH);
-        logger::info("HiZOcclusion: Upscaling active. Using scaled resolution: {}x{}", desiredW, desiredH);
     } else {
         desiredW = depthDesc.Width;
         desiredH = depthDesc.Height;
-        logger::info("HiZOcclusion: Upscaling inactive. Using depth buffer resolution: {}x{}", desiredW, desiredH);
     }
 
     // Build Hi-Z pyramid from previous frame depth buffer
@@ -606,14 +599,12 @@ bool HiZOcclusion::InitHiZResources()
     
     if (needRecreate) {
         auto startRecreateTimer = std::chrono::high_resolution_clock::now();
-        logger::info("Recreating Hi-Z resources: {}x{}", desiredW, desiredH);
 
         // Compute mip count for the new texture
         uint32_t w = desiredW;
         uint32_t h = desiredH;
         uint32_t newMipCount = 1;
         while (w > 1 || h > 1) { w = std::max(1u, w >> 1); h = std::max(1u, h >> 1); ++newMipCount; }
-        // logger::info("new mip count: {}", newMipCount);
 
         // Create new resources into temporaries
         ID3D11Texture2D* newTexture = nullptr;
@@ -705,9 +696,7 @@ bool HiZOcclusion::InitHiZResources()
         hiZMipCount = newMipCount;
         resourceCreationFrame = globals::state->frameCount;
         resourcesValid = true;
-        logger::info("Hi-Z resources ready: {}x{}, mips={}.", hiZWidth, hiZHeight, hiZMipCount);
-        // logger::info("Created {} SRVs and {} UAVs", hiZSRVsPerMip.size(), hiZUAVs.size());
-        
+
         // Validate all SRVs are non-null with safe validation
         bool allSRVsValid = true;
         for (uint32_t i = 0; i < hiZMipCount; ++i) {
@@ -738,8 +727,6 @@ bool HiZOcclusion::InitHiZResources()
                         // Attempt to get description - if this crashes, it indicates a deeper issue
                         try {
                             hiZSRVsPerMip[i]->GetDesc(&srvDesc);
-                            // logger::info("SRV mip {} format: {}, most detailed mip: {}", i, 
-                            //            (int)srvDesc.Format, srvDesc.Texture2D.MostDetailedMip);
                         } catch (...) {
                             logger::error("SRV for mip {} failed GetDesc validation - resource may be invalid", i);
                             allSRVsValid = false;
@@ -781,7 +768,6 @@ bool HiZOcclusion::InitHiZResources()
             return false;
         }
         
-        // logger::info("Building level 0 from depth (frame={})", currentFrame);
         ID3D11ShaderResourceView* srvs[1] = { depth.depthSRV };
         context->CSSetShaderResources(0, 1, srvs);
         ID3D11UnorderedAccessView* uavs[1] = { hiZUAVs[0] };
@@ -794,7 +780,6 @@ bool HiZOcclusion::InitHiZResources()
 		context->Dispatch(groupsX, groupsY, 1);
 
 		// Unbind (must pass arrays, not raw nullptr, when Count > 0)
-		// logger::info("Unbinding");
 		ID3D11UnorderedAccessView* nullUAVs_lvl0[1] = { nullptr };
 		context->CSSetUnorderedAccessViews(0, 1, nullUAVs_lvl0, nullptr);
 		ID3D11ShaderResourceView* nullSRVs_lvl0[1] = { nullptr };
@@ -802,7 +787,6 @@ bool HiZOcclusion::InitHiZResources()
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
 
-	// logger::info("Downsampling pyramid with max reduction (frame={})", currentFrame);
 	// Downsample pyramid with max reduction
 	uint32_t srcW = desiredW;
 	uint32_t srcH = desiredH;
@@ -838,11 +822,9 @@ bool HiZOcclusion::InitHiZResources()
 		const uint32_t tgX = 16, tgY = 16;
 		uint32_t groupsX = (dstW + tgX - 1) / tgX;
 		uint32_t groupsY = (dstH + tgY - 1) / tgY;
-		// logger::info("Dispatching {}x{}", groupsX, groupsY);
 		context->Dispatch(groupsX, groupsY, 1);
 
 		// Unbind for next level (must pass arrays, not raw nullptr)
-		// logger::info("Unbinding for next level (frame={})", currentFrame);
 		ID3D11UnorderedAccessView* nullUAVs_ds[1] = { nullptr };
 		context->CSSetUnorderedAccessViews(0, 1, nullUAVs_ds, nullptr);
 		ID3D11ShaderResourceView* nullSRVs_ds[1] = { nullptr };
@@ -955,7 +937,6 @@ bool HiZOcclusion::SetupGPUCullingResources()
     readbackState.writeIndex = 0;
     readbackState.readIndex = 0;
     readbackState.numPendingReads = 0;
-    logger::info("Created {} staging buffers for triple-buffered readback", AsyncReadbackState::BUFFER_COUNT);
 
     // Create sampler for Hi-Z sampling
     D3D11_SAMPLER_DESC sampDesc = {};
@@ -1019,8 +1000,6 @@ void HiZOcclusion::CreateDebugBuffer()
     dbgReadback.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     
     device->CreateBuffer(&dbgReadback, nullptr, &debugReadbackBuffer);
-    
-    logger::info("Debug buffer created");
 }
 
 void HiZOcclusion::ReleaseDebugBuffer()
@@ -1041,7 +1020,6 @@ void HiZOcclusion::ReleaseDebugBuffer()
 
 void HiZOcclusion::ExecuteVisibilityTests()
 {
-    logger::info("Frame {} - HiZOcclusion::ExecuteVisibilityTests()", globals::state->frameCount);
     auto context = globals::d3d::context;
     auto device = globals::d3d::device;
     if (!context || !device) {
@@ -1085,14 +1063,7 @@ void HiZOcclusion::ExecuteVisibilityTests()
                     // Mark buffer as free
                     readbackState.hasPendingRead[bufferIdx] = false;
                     readbackState.numPendingReads--;
-                    
-                    uint32_t latency = globals::state->frameCount - readbackState.pendingFrameIndex[bufferIdx];
-                    if (settings.debugMode) {
-                        logger::info("Successfully read results from buffer {} (frame {} -> {}, latency = {} frames)",
-                                    bufferIdx, readbackState.pendingFrameIndex[bufferIdx], 
-                                    globals::state->frameCount, latency);
-                    }
-                    
+                                        
                     // Advance read index for next frame
                     readbackState.readIndex = (readbackState.readIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
                     break;  // Successfully processed one buffer, don't read more this frame
@@ -1167,11 +1138,6 @@ void HiZOcclusion::ExecuteVisibilityTests()
         
         // Advance write index for next frame
         readbackState.writeIndex = (readbackState.writeIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
-        
-        if (settings.debugMode) {
-            logger::info("Dispatched HiZ test for frame {} to buffer {} ({} pending)",
-                        globals::state->frameCount, writeIdx, readbackState.numPendingReads);
-        }
 
         // Update statistics
         stats.frameIndex = globals::state->frameCount;
@@ -1230,7 +1196,6 @@ void HiZOcclusion::DispatchComputeShader()
 
         geometryBounds.push_back(sphere);
         pendingGeometrySnapshot.push_back(geometry);
-        pendingGeometryResults.push_back(geometry);
         ++processed;
     }
 
@@ -1317,6 +1282,9 @@ void HiZOcclusion::DispatchComputeShader()
             stats.gpuCullingTimeMs = static_cast<float>(
                 std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(endDispatch - startDispatch).count()
             );
+            if (settings.enableBoundsViewer && boundsOverlayUAV) {
+                overlayUpdatedThisFrame = true;
+            }
         }
 
         // Unbind resources (must pass arrays of nulls)
