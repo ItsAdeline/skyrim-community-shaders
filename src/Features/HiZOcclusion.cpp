@@ -24,19 +24,11 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
     debugMode,
     enableBoundsViewer,
     boundsMaxObjects,
-    showBehindCamera,
-    showInvalidRadius,
-    showCameraInside,
-    showInvalidDepth,
-    showNearestOffscreen,
-    showVisible,
-    showOccluded,
-    framesToCull,
-    framesToUncull,
-    temporalStabilityFactor,
-    minCullRadius,
-    minHiZMipLevel,
-    depthStencilTargetIndex
+    showVisTestPassed,
+    showVisInsideBounds,
+    showVisInvalidRadius,
+    showCulledFrustum,
+    showCulledNoEarlyOut
 )
 
 namespace
@@ -104,7 +96,6 @@ void HiZOcclusion::ClearBoundsOverlay() {
 
 void HiZOcclusion::DrawSettings()
 {
-    // logger::info("Drawing Hi-Z settings (frame={})", currentFrame);
     if (ImGui::TreeNodeEx("Hi-Z Viewer", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Show viewer window", &settings.enableHiZViewer);
         if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -154,72 +145,53 @@ void HiZOcclusion::DrawSettings()
                 ImGui::Separator();
                 ImGui::Text("Color Filters:");
                 
-                ImGui::Checkbox("Green (Visible)", &settings.showVisible);
+                ImGui::Checkbox("Green (Visible: Test Passed)", &settings.showVisTestPassed);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.visibleCount);
+                ImGui::TextColored(ImVec4(0.f, 1.f, 0.f, 1.f), ": %u", stats.visTestPassed);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects that passed all tests and are visible");
+                    ImGui::SetTooltip("Geometry that passed a valid depth test");
                 }
                 
-                ImGui::Checkbox("Red (Occluded)", &settings.showOccluded);
+                ImGui::Checkbox("Teal (Visible: Camera Inside Bounds)", &settings.showVisInsideBounds);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.occludedCount);
+                ImGui::TextColored(ImVec4(0.f, 1.f, 0.5f, 1.f), ": %u", stats.visInsideBounds);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects occluded by Hi-Z depth test");
+                    ImGui::SetTooltip("Geometry whose bounds clip the camera");
                 }
                 
-                ImGui::Checkbox("Magenta (Behind Camera)", &settings.showBehindCamera);
+                ImGui::Checkbox("Cyan (Visible: Invalid Radius)", &settings.showVisInvalidRadius);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.behindCamera);
+                ImGui::TextColored(ImVec4(0.f, 1.f, 1.f, 1.f), ": %u", stats.visInvalidRadius);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects with center behind camera (negative Z in view space)");
+                    ImGui::SetTooltip("Geometry with a radius of 0 or less");
                 }
                 
-                ImGui::Checkbox("Yellow (Nearest Off-Screen)", &settings.showNearestOffscreen);
+                ImGui::Checkbox("Magenta (Culled: Frustum)", &settings.showCulledFrustum);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.nearestOffscreen);
+                ImGui::TextColored(ImVec4(1.f, 0.f, 1.f, 1.f), ": %u", stats.culledFrustum);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects with nearest point outside screen bounds");
+                    ImGui::SetTooltip("Geometry with no valid boundary points on screen");
                 }
                 
-                ImGui::Checkbox("Orange (Camera Inside)", &settings.showCameraInside);
+                ImGui::Checkbox("Red (Culled: No Early Out)", &settings.showCulledNoEarlyOut);
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.cameraInside);
+                ImGui::TextColored(ImVec4(1.f, 0.f, 0.f, 1.f), ": %u", stats.culledNoEarlyOut);
                 if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Camera is inside the bounding sphere");
-                }
-                
-                ImGui::Checkbox("Dark Yellow (Invalid Radius)", &settings.showInvalidRadius);
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.invalidRadius);
-                if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects with invalid (zero or negative) radius");
-                }
-                
-                ImGui::Checkbox("Pink (Invalid Depth)", &settings.showInvalidDepth);
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), ": %u", stats.invalidDepth);
-                if (auto _tt = Util::HoverTooltipWrapper()) {
-                    ImGui::SetTooltip("Objects with depth values outside valid range (0-1)");
+                    ImGui::SetTooltip("Geometry that failed all tests and were culled");
                 }
             }
-            
             ImGui::TreePop();
         }
 
         // Status line
         ImGui::Separator();
         ImGui::Text("Frame: %u", globals::state ? globals::state->frameCount : 0);
-		//ImGui::Text("Resources: %s", resourcesSetup ? "true" : "false");
 		ImGui::Text("Status: %s", status.c_str());
-        //ImGui::Text("Hi-Z: %s, mips=%u", hiZTexture ? "Ready" : "Not Built", hiZMipCount);
-        //ImGui::Text("SRVs: %u, UAVs: %u", (uint32_t)hiZSRVsPerMip.size(), (uint32_t)hiZUAVs.size());
         ImGui::Text("Geometry from frame %u: %u", globals::state->frameCount - 1, stats.geometryListSize);
-        //ImGui::Text("CPU Results list size: %u", (uint32_t)visibilityResultsCPU.size());
-        //ImGui::Text("Map Results list size: %u", (uint32_t)visibilityResultsMap.size());
         ImGui::Text("Total tested: %u", stats.totalTested);
-        ImGui::Text("Culled: %u", stats.culled);
-        ImGui::Text("Visible: %u", stats.visible);
+        ImGui::Text("Culled: %u", stats.culledFrustum + stats.culledNoEarlyOut);
+        ImGui::Text("Visible: %u", stats.visTestPassed + stats.visInsideBounds + stats.visInvalidRadius);
+        ImGui::Text("Unknown/Default: %u", stats.defaultValue);
         // Display profiling durations in micro seconds
         ImGui::Text("GPU time: %.2f us", stats.gpuCullingTimeMs * 1000);
         ImGui::Text("Copy results time: %.2f us", stats.copyTimeMs * 1000);
@@ -228,121 +200,21 @@ void HiZOcclusion::DrawSettings()
         ImGui::Text("Unmap time: %.2f us", stats.unmapTimeMs * 1000);
         ImGui::Text("CPU Readback time: %.2f us", stats.readbackTimeMs * 1000);
 
-        /*
-        // Detailed resource validation in UI
-        if (ImGui::TreeNode("Resource Validation")) {
-            ImGui::Text("Texture pointer: %p", hiZTexture);
-            ImGui::Text("Main SRV: %p", hiZSRV);
-            
-            for (uint32_t i = 0; i < std::min(hiZMipCount, (uint32_t)hiZSRVsPerMip.size()); ++i) {
-                ImVec4 color = hiZSRVsPerMip[i] ? ImVec4(0, 1, 0, 1) : ImVec4(1, 0, 0, 1);
-                ImGui::TextColored(color, "Mip %u SRV: %p", i, hiZSRVsPerMip[i]);
-            }
-            
-            ImGui::TreePop();
-        }
-        if (hiZTexture && (hiZSRVsPerMip.size() != hiZMipCount || hiZUAVs.size() != hiZMipCount)) {
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "Warning: view count mismatch (mips=%u, SRVs=%llu, UAVs=%llu)",
-                hiZMipCount,
-                static_cast<unsigned long long>(hiZSRVsPerMip.size()),
-                static_cast<unsigned long long>(hiZUAVs.size()));
-        }
-        */
-
         ImGui::TreePop();
     }
     
     // Hi-Z Culling Settings
     if (ImGui::TreeNodeEx("Hi-Z Culling", ImGuiTreeNodeFlags_DefaultOpen)) {
-        bool prevEnableHiZCulling = settings.enableHiZCulling;
-        if (ImGui::Checkbox("Enable Hi-Z Culling", &settings.enableHiZCulling)) {
-            logger::info("Hi-Z culling toggled: {}", settings.enableHiZCulling);
-            if (!settings.enableHiZCulling && prevEnableHiZCulling) {
-                // If culling is disabled, release all resources immediately
-                ReleaseAllResources();
-            }
-        }
-        ImGui::SliderFloat("Conservative Bias", &settings.conservativeBias, -1.0f, 1.0f, "%.3f");
+        ImGui::Checkbox("Enable Hi-Z Culling", &settings.enableHiZCulling);
+        ImGui::SameLine();
         if (auto _tt = Util::HoverTooltipWrapper()) {
-            Util::DrawMultiLineTooltip({
-                "Adjusts the depth bias for occlusion testing.",
-                "Positive values make culling more conservative (less aggressive, less pop-in).",
-                "Negative values make culling more aggressive (more objects culled, more pop-in)."
-            });
+            ImGui::SetTooltip("Enable Hi-Z Culling system");
         }
-
-        ImGui::SliderInt("Frames to Cull", reinterpret_cast<int*>(&settings.framesToCull), 1, 10);
+        ImGui::SliderFloat("Conservative Bias", &settings.conservativeBias, 0.0f, 1.0f, "%.4f");
+        ImGui::SameLine();
         if (auto _tt = Util::HoverTooltipWrapper()) {
-            Util::DrawMultiLineTooltip({
-                "Number of consecutive frames an object must be occluded before it is hidden.",
-                "Higher values reduce pop-in but may keep occluded objects visible longer."
-            });
+            ImGui::SetTooltip("Conservative bias for Hi-Z Culling. \nHigher values are more conservative, lower values are more aggressive.");
         }
-
-        ImGui::SliderInt("Frames to Uncull", reinterpret_cast<int*>(&settings.framesToUncull), 1, 10);
-        if (auto _tt = Util::HoverTooltipWrapper()) {
-            Util::DrawMultiLineTooltip({
-                "Number of consecutive frames an object must be visible before it is shown.",
-                "Higher values can prevent flickering but may delay objects appearing."
-            });
-        }
-
-        ImGui::SliderFloat("Temporal Stability", &settings.temporalStabilityFactor, 0.0f, 0.99f, "%.2f");
-        if (auto _tt = Util::HoverTooltipWrapper()) {
-            Util::DrawMultiLineTooltip({
-                "Controls how quickly an object's visibility state changes.",
-                "Higher values (closer to 1.0) increase stability, reducing flickering but potentially increasing pop-in.",
-                "Lower values (closer to 0.0) make visibility changes more immediate."
-            });
-        }
-
-        ImGui::SliderFloat("Min Cull Radius", &settings.minCullRadius, 0.0f, 10.0f, "%.2f");
-        if (auto _tt = Util::HoverTooltipWrapper()) {
-            Util::DrawMultiLineTooltip({
-                "Objects with a bounding sphere radius smaller than this value will never be culled by Hi-Z.",
-                "Useful for preventing flickering on small objects like leaves or grass.",
-                "Set to 0.0 to disable this feature."
-            });
-        }
-
-        // Clamp mip selection to available range when resources exist
-        uint32_t maxMipForCulling = hiZMipCount > 0 ? (hiZMipCount - 1) : 0;
-        ImGui::SliderInt("Min Hi-Z Mip Level", reinterpret_cast<int*>(&settings.minHiZMipLevel), 0, static_cast<int>(maxMipForCulling));
-        if (auto _tt = Util::HoverTooltipWrapper()) {
-            Util::DrawMultiLineTooltip({
-                "Forces the Hi-Z culling test to use at least this mip level.",
-                "Lower mip levels (closer to 0) are higher resolution, improving accuracy but potentially reducing performance.",
-                "Higher values (more aggressive downsampling) can lead to more false positives (objects culled when visible) or flickering."
-            });
-        }
-
-        // Depth Stencil Target selection
-        const char* depthTargetNames[] = {
-            "kMAIN", "kMAIN_COPY", "kPOST_ZPREPASS_COPY", "kCUBEMAP_REFLECTIONS",
-            "kPRECIPITATION_OCCLUSION_MAP", "kTOTAL" // Add more as needed
-        };
-        int currentDepthTargetIndex = static_cast<int>(settings.depthStencilTargetIndex);
-        if (ImGui::Combo("Depth Target", &currentDepthTargetIndex, depthTargetNames, IM_ARRAYSIZE(depthTargetNames))) {
-            settings.depthStencilTargetIndex = static_cast<uint32_t>(currentDepthTargetIndex);
-            // Force resource recreation if the depth target changes
-            ReleaseAllResources();
-        }
-        if (auto _tt = Util::HoverTooltipWrapper()) {
-            Util::DrawMultiLineTooltip({
-                "Selects which depth buffer to use for Hi-Z generation.",
-                "'kMAIN' usually provides the highest detail.",
-                "Changing this setting will force a resource recreation."
-            });
-        }
-        
-        if (ImGui::Checkbox("Show Culling Stats", &settings.showCullingStats)) {
-            logger::info("Culling stats display toggled: {}", settings.showCullingStats);
-        }
-        
-        if (ImGui::Checkbox("Debug Mode", &settings.debugMode)) {
-            logger::info("Debug mode toggled: {}", settings.debugMode);
-        }
-        
         ImGui::TreePop();
     }
 
@@ -427,55 +299,6 @@ void HiZOcclusion::RestoreDefaultSettings()
     settings = {};
 }
 
-HiZOcclusion::~HiZOcclusion()
-{
-    ReleaseAllResources();
-}
-
-void HiZOcclusion::ReleaseAllResources()
-{
-    logger::info("Releasing all HiZOcclusion resources.");
-
-    // Release Hi-Z pyramid resources
-    if (hiZTexture) { hiZTexture->Release(); hiZTexture = nullptr; }
-    if (hiZSRV) { hiZSRV->Release(); hiZSRV = nullptr; }
-    for (auto* v : hiZSRVsPerMip) { if (v) v->Release(); }
-    hiZSRVsPerMip.clear();
-    for (auto* u : hiZUAVs) { if (u) u->Release(); }
-    hiZUAVs.clear();
-    hiZWidth = hiZHeight = hiZMipCount = 0;
-
-    // Release GPU culling resources
-    if (geometryBoundsBuffer) { geometryBoundsBuffer->Release(); geometryBoundsBuffer = nullptr; }
-    if (geometryBoundsSRV) { geometryBoundsSRV->Release(); geometryBoundsSRV = nullptr; }
-    if (visibilityResultsBuffer) { visibilityResultsBuffer->Release(); visibilityResultsBuffer = nullptr; }
-    if (visibilityResultsUAV) { visibilityResultsUAV->Release(); visibilityResultsUAV = nullptr; }
-    if (hiZTestParamsBuffer) { hiZTestParamsBuffer->Release(); hiZTestParamsBuffer = nullptr; }
-    if (hiZSampler) { hiZSampler->Release(); hiZSampler = nullptr; }
-
-    // Release readback staging buffers
-    for (int i = 0; i < AsyncReadbackState::BUFFER_COUNT; ++i) {
-        if (readbackState.stagingBuffers[i]) {
-            readbackState.stagingBuffers[i]->Release();
-            readbackState.stagingBuffers[i] = nullptr;
-        }
-    }
-    readbackState.numPendingReads = 0;
-
-    // Release debug resources
-    ReleaseDebugBuffer(); // This function already exists and handles its resources
-
-    // Release shaders
-    // ClearShaderCache(); // Shaders are not released here to avoid unnecessary recompilation
-
-    // Release bounds overlay resources
-    ReleaseBoundsOverlayResources(); // This function already exists and handles its resources
-
-    resourcesSetup = false;
-    resourcesValid = false;
-    status = "resources_released";
-}
-
 // Preserve Feature base-class contract
 void HiZOcclusion::SetupResources()
 {
@@ -483,9 +306,7 @@ void HiZOcclusion::SetupResources()
 }
 
 void HiZOcclusion::InitShaders()
-{
-    logger::info("Initializing HiZ shaders (frame={})", globals::state ? globals::state->frameCount : 0);
-    
+{  
     // Ensure we have a valid device before attempting shader compilation
     auto device = globals::d3d::device;
     if (!device) {
@@ -503,7 +324,6 @@ void HiZOcclusion::InitShaders()
                 logger::error("{}", status);
                 return;
             }
-            else { logger::info("compiled HiZBuildLevel0CS"); }
         } catch (const std::exception& e) {
             status = "exception during HiZBuildLevel0CS compilation";
             logger::error("{}: {}", status, e.what());
@@ -519,7 +339,6 @@ void HiZOcclusion::InitShaders()
                 logger::error("{}", status);
                 return;
             }
-            else { logger::info("compiled HiZDownsampleCS"); }
         } catch (const std::exception& e) {
             status = "exception during HiZDownsampleCS compilation";
             logger::error("{}: {}", status, e.what());
@@ -535,7 +354,6 @@ void HiZOcclusion::InitShaders()
                 logger::error("{}", status);
                 return;
             }
-            else { logger::info("compiled HiZTestCS"); }
         } catch (const std::exception& e) {
             status = "exception during HiZTestCS compilation";
             logger::error("{}: {}", status, e.what());
@@ -545,7 +363,6 @@ void HiZOcclusion::InitShaders()
     
     resourcesSetup = true;
     status = "shaders_compiled";
-    logger::info("HiZ shader compilation completed successfully");
     
     // Skip resource validation for a few frames after shader compilation
     // to avoid crashes during device state transitions
@@ -563,42 +380,46 @@ void HiZOcclusion::Reset()
 {
     if (!settings.enableHiZCulling) {
         if (wasEnabled) {
-            ReleaseAllResources();
-            ResetCulled();
+            // Uncull all hidden geometries
+            if (!unCullNextFrame.empty()) {
+                for (auto& geometry : unCullNextFrame) {
+                    if (geometry) {
+                        geometry->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                    }
+                }
+                unCullNextFrame.clear();
+            }
+            // Empty pending geometry list
+            if (!pendingGeometry.empty()) {
+                pendingGeometry.clear();
+            }
+            // Release and clear all resources
+            ReleaseBoundsOverlayResources();
+            ReleaseDebugBuffer();
+            UnbindD3DResources();
+            // Reset stats
+            stats.frameIndex = 0;
+            stats.totalTested = 0;
+            stats.geometryListSize = 0;
+            stats.visTestPassed = 0;
+            stats.visInsideBounds = 0;
+            stats.visInvalidRadius = 0;
+            stats.defaultValue = 0;
+            stats.culledFrustum = 0;
+            stats.culledNoEarlyOut = 0;
+            stats.resourceSetupDurationMS = 0.0f;
+            stats.recreateDurationMS = 0.0f;
             wasEnabled = false;
         }
-    }
-    else {
+    } else {
         if (!wasEnabled) {
-            SetupResources();
             wasEnabled = true;
         }
     }
 }
 
-void HiZOcclusion::ResetCulled()
-{
-    // Reset hidden flag for all geometries that were culled
-    if (!unCullNextFrame.empty()) {
-        for (auto* g : unCullNextFrame) {
-            // Add robust validity check before accessing g
-            if (g && g->parent) {
-                g->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
-            } else {
-                if (settings.debugMode) {
-                    logger::warn("HiZOcclusion: Skipping invalid geometry object in ResetCulled() (null geo or parent)");
-                }
-            }
-        }
-        unCullNextFrame.clear();
-    }
-}
-
 void HiZOcclusion::EarlyPrepass()
 {
-    // Call Reset() to handle dynamic enabling/disabling of the feature
-    Reset();
-
     if (settings.debugMode) {
         logger::debug("Frame {} EarlyPrepass - {} hidden geometries queued for re-test", 
                      globals::state->frameCount, unCullNextFrame.size());
@@ -607,7 +428,7 @@ void HiZOcclusion::EarlyPrepass()
 
 void HiZOcclusion::Prepass()
 {
-    logger::info("Frame {} - HiZOcclusion::Prepass", globals::state->frameCount);
+
     if (!settings.enableHiZCulling) {
         return;
     }
@@ -617,27 +438,18 @@ void HiZOcclusion::Prepass()
     stats.frameIndex = currentFrame;
     stats.totalTested = 0;
     stats.geometryListSize = (uint32_t)pendingGeometry.size();
-    stats.culled = 0;
-    stats.visible = 0;
     stats.resourceSetupDurationMS = 0.0f;
     stats.recreateDurationMS = 0.0f;
-    stats.behindCamera = 0;
-    stats.invalidRadius = 0;
-    stats.cameraInside = 0;
-    stats.invalidDepth = 0;
-    stats.nearestOffscreen = 0;
-    stats.visibleCount = 0;
-    stats.occludedCount = 0;
+    stats.visTestPassed = 0;
+    stats.visInsideBounds = 0;
+    stats.visInvalidRadius = 0;
+    stats.defaultValue = 0;
+    stats.culledFrustum = 0;
+    stats.culledNoEarlyOut = 0;
 
-    // Reset current-frame accumulation
-    //visibilityResultsCPU.clear();
-    //visibilityResultsMap.clear();
-    batchDispatchedThisFrame = false;
-    
-    // Reset timing statistics for this frame
-    stats.geometryProcessingTimeMs = 0.0f;
-    //stats.gpuCullingTimeMs = 0.0f;
-    //stats.readbackTimeMs = 0.0f;
+    if (settings.enableBoundsViewer && boundsOverlayUAV) {
+        overlayUpdatedThisFrame = false;
+    }
 
     if (!resourcesSetup) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -662,7 +474,7 @@ void HiZOcclusion::Prepass()
     }
     
     // Setup GPU culling resources if not already done
-    if (settings.enableHiZCulling && (!geometryBoundsBuffer || !hiZTestParamsBuffer || !hiZSampler || !visibilityResultsBuffer)) {
+    if (!geometryBoundsBuffer || !hiZTestParamsBuffer || !hiZSampler || !visibilityResultsBuffer) {
         if (!SetupGPUCullingResources()) {
             logger::error("HiZOcclusion::EarlyPrepass - failed to setup GPU culling resources");
             status = "failed to setup GPU culling resources";
@@ -678,16 +490,17 @@ void HiZOcclusion::Prepass()
 
     if (!unCullNextFrame.empty()) {
         // Re-add previously hidden geometry for continuous testing
-        for (auto* geo : unCullNextFrame) {
-            if (geo && pendingGeometrySet.find(geo) == pendingGeometrySet.end()) {
+        for (auto& geo : unCullNextFrame) {
+            auto* rawGeo = geo.get();
+            if (rawGeo && !pendingGeometrySet.contains(rawGeo)) {
                 //geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
                 pendingGeometry.push_back(geo);
-                pendingGeometrySet.insert(geo);
+                pendingGeometrySet.insert(rawGeo);
             }
         }
     }
 
-    if (readbackState.hasPendingRead || !pendingGeometry.empty()) {
+    if (readbackState.numPendingReads > 0 || !pendingGeometry.empty()) {
         ExecuteVisibilityTests();
     }
 
@@ -697,9 +510,12 @@ void HiZOcclusion::Prepass()
         pendingGeometry.clear();
         pendingGeometrySet.clear();
         geometryBounds.clear();
-        geometryIndexMap.clear();
     } else {
         logger::debug("Frame {} - No pending geometry to process in Prepass", globals::state->frameCount);
+    }
+
+    if (settings.enableBoundsViewer && boundsOverlayUAV && !overlayUpdatedThisFrame) {
+        ClearBoundsOverlay();
     }
 
     UnbindD3DResources();
@@ -720,32 +536,16 @@ bool HiZOcclusion::InitHiZResources()
     }
 
     // Get previous frame depth dimensions
-    auto depth = renderer->GetDepthStencilData().depthStencils[settings.depthStencilTargetIndex];
+    auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
     if (!depth.depthSRV) {
 		logger::error("no depth texture SRV");
 		status = "no depth texture SRV";
         return false;
     }
-
-    // Verify depth buffer source and log details
-    //logger::info("Frame {} - HiZ using depth buffer: kPOST_ZPREPASS_COPY", globals::state->frameCount);
-    
-    // Check if other depth targets are available for comparison
-    //auto& depthStencils = renderer->GetDepthStencilData().depthStencils;
-    /*logger::info("Available depth targets:");
-    for (int i = 0; i < RE::RENDER_TARGETS_DEPTHSTENCIL::kTOTAL; ++i) {
-        if (depthStencils[i].depthSRV) {
-            logger::info("  Target {}: Available", i);
-        }
-    }
-    */
     
     // Log depth buffer properties
     D3D11_TEXTURE2D_DESC depthTexDesc{};
     depth.texture->GetDesc(&depthTexDesc);
-    logger::info("Depth buffer: {}x{}, Format: {}, MipLevels: {}", 
-                depthTexDesc.Width, depthTexDesc.Height, 
-                static_cast<int>(depthTexDesc.Format), depthTexDesc.MipLevels);
 
     D3D11_SHADER_RESOURCE_VIEW_DESC depthSRVDesc{};
     depth.depthSRV->GetDesc(&depthSRVDesc);
@@ -766,8 +566,10 @@ bool HiZOcclusion::InitHiZResources()
 		return false;
 	}
 
-    uint32_t desiredW, desiredH;
-    if (globals::features::upscaling.loaded && globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kNONE) {
+    uint32_t desiredW;
+    uint32_t desiredH;
+
+    if (globals::features::upscaling.loaded && !((Upscaling::UpscaleMethod)globals::features::upscaling.settings.upscaleMethod == Upscaling::UpscaleMethod::kNONE)) {
         uint32_t displayW = static_cast<uint32_t>(globals::state->screenSize.x);
         uint32_t displayH = static_cast<uint32_t>(globals::state->screenSize.y);
         desiredW = static_cast<uint32_t>(displayW * globals::features::upscaling.dynamicResolutionWidthRatio);
@@ -775,11 +577,9 @@ bool HiZOcclusion::InitHiZResources()
         // Ensure dimensions are at least 1
         desiredW = std::max(1u, desiredW);
         desiredH = std::max(1u, desiredH);
-        logger::info("HiZOcclusion: Upscaling active. Using scaled resolution: {}x{}", desiredW, desiredH);
     } else {
         desiredW = depthDesc.Width;
         desiredH = depthDesc.Height;
-        logger::info("HiZOcclusion: Upscaling inactive. Using depth buffer resolution: {}x{}", desiredW, desiredH);
     }
 
     // Build Hi-Z pyramid from previous frame depth buffer
@@ -799,17 +599,12 @@ bool HiZOcclusion::InitHiZResources()
     
     if (needRecreate) {
         auto startRecreateTimer = std::chrono::high_resolution_clock::now();
-        logger::info("Recreating Hi-Z resources: {}x{}", desiredW, desiredH);
-
-        // Release all existing resources before creating new ones
-        ReleaseAllResources();
 
         // Compute mip count for the new texture
         uint32_t w = desiredW;
         uint32_t h = desiredH;
         uint32_t newMipCount = 1;
         while (w > 1 || h > 1) { w = std::max(1u, w >> 1); h = std::max(1u, h >> 1); ++newMipCount; }
-        // logger::info("new mip count: {}", newMipCount);
 
         // Create new resources into temporaries
         ID3D11Texture2D* newTexture = nullptr;
@@ -884,6 +679,14 @@ bool HiZOcclusion::InitHiZResources()
             return false;
         }
 
+        // Success: release old and swap in new resources
+        if (hiZSRV) { hiZSRV->Release(); hiZSRV = nullptr; }
+        for (auto* v : hiZSRVsPerMip) { if (v) v->Release(); }
+        hiZSRVsPerMip.clear();
+        for (auto* u : hiZUAVs) { if (u) u->Release(); }
+        hiZUAVs.clear();
+        if (hiZTexture) { hiZTexture->Release(); hiZTexture = nullptr; }
+
         hiZTexture = newTexture;
         hiZSRV = newSRV;
         hiZSRVsPerMip = std::move(newSRVsPerMip);
@@ -893,9 +696,7 @@ bool HiZOcclusion::InitHiZResources()
         hiZMipCount = newMipCount;
         resourceCreationFrame = globals::state->frameCount;
         resourcesValid = true;
-        logger::info("Hi-Z resources ready: {}x{}, mips={}.", hiZWidth, hiZHeight, hiZMipCount);
-        // logger::info("Created {} SRVs and {} UAVs", hiZSRVsPerMip.size(), hiZUAVs.size());
-        
+
         // Validate all SRVs are non-null with safe validation
         bool allSRVsValid = true;
         for (uint32_t i = 0; i < hiZMipCount; ++i) {
@@ -926,8 +727,6 @@ bool HiZOcclusion::InitHiZResources()
                         // Attempt to get description - if this crashes, it indicates a deeper issue
                         try {
                             hiZSRVsPerMip[i]->GetDesc(&srvDesc);
-                            // logger::info("SRV mip {} format: {}, most detailed mip: {}", i, 
-                            //            (int)srvDesc.Format, srvDesc.Texture2D.MostDetailedMip);
                         } catch (...) {
                             logger::error("SRV for mip {} failed GetDesc validation - resource may be invalid", i);
                             allSRVsValid = false;
@@ -969,7 +768,6 @@ bool HiZOcclusion::InitHiZResources()
             return false;
         }
         
-        // logger::info("Building level 0 from depth (frame={})", currentFrame);
         ID3D11ShaderResourceView* srvs[1] = { depth.depthSRV };
         context->CSSetShaderResources(0, 1, srvs);
         ID3D11UnorderedAccessView* uavs[1] = { hiZUAVs[0] };
@@ -982,7 +780,6 @@ bool HiZOcclusion::InitHiZResources()
 		context->Dispatch(groupsX, groupsY, 1);
 
 		// Unbind (must pass arrays, not raw nullptr, when Count > 0)
-		// logger::info("Unbinding");
 		ID3D11UnorderedAccessView* nullUAVs_lvl0[1] = { nullptr };
 		context->CSSetUnorderedAccessViews(0, 1, nullUAVs_lvl0, nullptr);
 		ID3D11ShaderResourceView* nullSRVs_lvl0[1] = { nullptr };
@@ -990,7 +787,6 @@ bool HiZOcclusion::InitHiZResources()
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
 
-	// logger::info("Downsampling pyramid with max reduction (frame={})", currentFrame);
 	// Downsample pyramid with max reduction
 	uint32_t srcW = desiredW;
 	uint32_t srcH = desiredH;
@@ -1026,11 +822,9 @@ bool HiZOcclusion::InitHiZResources()
 		const uint32_t tgX = 16, tgY = 16;
 		uint32_t groupsX = (dstW + tgX - 1) / tgX;
 		uint32_t groupsY = (dstH + tgY - 1) / tgY;
-		// logger::info("Dispatching {}x{}", groupsX, groupsY);
 		context->Dispatch(groupsX, groupsY, 1);
 
 		// Unbind for next level (must pass arrays, not raw nullptr)
-		// logger::info("Unbinding for next level (frame={})", currentFrame);
 		ID3D11UnorderedAccessView* nullUAVs_ds[1] = { nullptr };
 		context->CSSetUnorderedAccessViews(0, 1, nullUAVs_ds, nullptr);
 		ID3D11ShaderResourceView* nullSRVs_ds[1] = { nullptr };
@@ -1051,9 +845,9 @@ bool HiZOcclusion::SetupGPUCullingResources()
     // Create geometry bounds buffer (input)
     D3D11_BUFFER_DESC bufferDesc = {};
     bufferDesc.ByteWidth = maxGeometryCount * sizeof(DirectX::XMFLOAT4);
-    bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+    bufferDesc.Usage = D3D11_USAGE_DEFAULT;
     bufferDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    bufferDesc.CPUAccessFlags = 0;
     bufferDesc.StructureByteStride = sizeof(DirectX::XMFLOAT4);
     bufferDesc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     
@@ -1143,7 +937,6 @@ bool HiZOcclusion::SetupGPUCullingResources()
     readbackState.writeIndex = 0;
     readbackState.readIndex = 0;
     readbackState.numPendingReads = 0;
-    logger::info("Created {} staging buffers for triple-buffered readback", AsyncReadbackState::BUFFER_COUNT);
 
     // Create sampler for Hi-Z sampling
     D3D11_SAMPLER_DESC sampDesc = {};
@@ -1159,9 +952,6 @@ bool HiZOcclusion::SetupGPUCullingResources()
         logger::error("Failed to create Hi-Z sampler");
         return false;
     }
-
-    visibilityResultsCPU.resize(maxGeometryCount);
-    logger::info("GPU culling resources created successfully");
 
     // Debug output buffers
     if (settings.debugMode || settings.enableBoundsViewer) {
@@ -1200,11 +990,7 @@ void HiZOcclusion::CreateDebugBuffer()
     dbgUavDesc.Format = DXGI_FORMAT_UNKNOWN;
     dbgUavDesc.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
     dbgUavDesc.Buffer.NumElements = debugElementCount;
-    HRESULT uavResult = device->CreateUnorderedAccessView(debugResultsBuffer, &dbgUavDesc, &debugResultsUAV);
-    if (FAILED(uavResult)) {
-        logger::warn("Failed to create debugResultsUAV");
-        debugResultsUAV = nullptr; // Explicitly nullify on failure
-    }
+    device->CreateUnorderedAccessView(debugResultsBuffer, &dbgUavDesc, &debugResultsUAV);
     
     // Create double-buffered staging buffers for debug readback
     D3D11_BUFFER_DESC dbgReadback = {};
@@ -1214,8 +1000,6 @@ void HiZOcclusion::CreateDebugBuffer()
     dbgReadback.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     
     device->CreateBuffer(&dbgReadback, nullptr, &debugReadbackBuffer);
-    
-    logger::info("Debug buffer created");
 }
 
 void HiZOcclusion::ReleaseDebugBuffer()
@@ -1236,26 +1020,15 @@ void HiZOcclusion::ReleaseDebugBuffer()
 
 void HiZOcclusion::ExecuteVisibilityTests()
 {
-    logger::info("Frame {} - HiZOcclusion::ExecuteVisibilityTests()", globals::state->frameCount);
     auto context = globals::d3d::context;
     auto device = globals::d3d::device;
     if (!context || !device) {
         logger::warn("ExecuteVisibilityTests: D3D context or device not initialized");
         return;
     }
-
-    // Clear previous frame results and prepare for N+1 processing
-    visibilityResultsMap.clear();
-    visibilityResultsCPU.clear();
-
-    // Check if we have geometry from previous frame to process
-    if (pendingGeometry.empty() && readbackState.numPendingReads == 0) {
-        logger::debug("ExecuteVisibilityTests: No geometry to test and no pending results");
-        return;
-    }
-
+    
     // Try to read results from any pending staging buffers (multi-buffered approach)
-    {
+    if (readbackState.numPendingReads > 0) {
         auto readStart = std::chrono::high_resolution_clock::now();
         
         // Try to read from all pending buffers (oldest first)
@@ -1290,14 +1063,7 @@ void HiZOcclusion::ExecuteVisibilityTests()
                     // Mark buffer as free
                     readbackState.hasPendingRead[bufferIdx] = false;
                     readbackState.numPendingReads--;
-                    
-                    uint32_t latency = globals::state->frameCount - readbackState.pendingFrameIndex[bufferIdx];
-                    if (settings.debugMode) {
-                        logger::info("Successfully read results from buffer {} (frame {} -> {}, latency = {} frames)",
-                                    bufferIdx, readbackState.pendingFrameIndex[bufferIdx], 
-                                    globals::state->frameCount, latency);
-                    }
-                    
+                                        
                     // Advance read index for next frame
                     readbackState.readIndex = (readbackState.readIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
                     break;  // Successfully processed one buffer, don't read more this frame
@@ -1372,96 +1138,10 @@ void HiZOcclusion::ExecuteVisibilityTests()
         
         // Advance write index for next frame
         readbackState.writeIndex = (readbackState.writeIndex + 1) % AsyncReadbackState::BUFFER_COUNT;
-        
-        if (settings.debugMode) {
-            logger::info("Dispatched HiZ test for frame {} to buffer {} ({} pending)",
-                        globals::state->frameCount, writeIdx, readbackState.numPendingReads);
-        }
 
         // Update statistics
         stats.frameIndex = globals::state->frameCount;
     }
-
-    /*
-    // Read back and log runtime diagnostics from shader when enabled
-    if ((settings.debugMode || settings.enableBoundsViewer) && debugResultsBuffer && debugReadbackBuffer) {
-
-        context->CopyResource(debugReadbackBuffer, debugResultsBuffer);
-
-        if (debugReadbackBuffer) {
-            D3D11_MAPPED_SUBRESOURCE dbgMap{};
-            if (SUCCEEDED(context->Map(debugReadbackBuffer, 0, D3D11_MAP_READ, 0, &dbgMap))) {
-                auto* debugData = reinterpret_cast<const HiZOcclusion::DebugData*>(dbgMap.pData);            // Print first up to 10 entries written by the shader
-            
-                // Print first up to 10 CULLED objects for debugging
-                logger::info("=== HiZ Debug Data (First 10 culled objects) ===");
-
-                // Map early-out reason codes to readable strings
-                auto getReasonString = [](uint32_t reason) -> const char* {
-                    switch (reason) {
-                        case 1: return "Behind camera";
-                        case 2: return "Invalid radius";
-                        case 4: return "Camera inside sphere";
-                        case 5: return "Invalid depth";
-                        case 6: return "Nearest point off-screen";
-                        case 0: return "Visible (passed all tests)";
-                        case 0xFFFFFFFF: return "Occluded by Hi-Z";  // -1 as uint
-                        default: return "Unknown";
-                    }
-                };
-
-                uint32_t culledCount = 0;
-                for (uint32_t i = 0; i < numGeometry && culledCount < 10; ++i) {
-                    const auto& data = debugData[i];
-                    
-                    // Only log objects that were culled (earlyOutReason != 0)
-                    // earlyOutReason == 0 means visible (passed all tests)
-                    if (data.earlyOutReason != 0) {
-                        logger::info("Geo {}: centerWS=({:.2f}, {:.2f}, {:.2f}), radius={:.2f}",
-                            i, data.centerWS_radius.x, data.centerWS_radius.y, data.centerWS_radius.z, data.centerWS_radius.w);
-                        logger::info("  CameraRel=({:.2f}, {:.2f}, {:.2f}), objDepth={:.4f}, sceneDepth={:.4f}",
-                            data.centerRel_objDepth.x, data.centerRel_objDepth.y, 
-                            data.centerRel_objDepth.z, data.centerRel_objDepth.w, data.sceneDepth);
-                        logger::info("  earlyOutReason={} ({})", 
-                            data.earlyOutReason, getReasonString(data.earlyOutReason));
-                        culledCount++;
-                    }
-                }
-            
-                if (culledCount == 0) {
-                    logger::info("  No culled objects found in this frame");
-                } else {
-                    logger::info("=== Logged {} culled objects ===", culledCount);
-                }
-
-                // Update statistics
-                stats.behindCamera = 0;
-                stats.invalidRadius = 0;
-                stats.cameraInside = 0;
-                stats.invalidDepth = 0;
-                stats.nearestOffscreen = 0;
-                stats.visibleCount = 0;
-                stats.occludedCount = 0;
-                
-                for (uint32_t i = 0; i < numGeometry; ++i) {
-                    const auto& data = debugData[i];
-                    switch (data.earlyOutReason) {
-                        case 1: stats.behindCamera++; break;
-                        case 2: stats.invalidRadius++; break;
-                        case 4: stats.cameraInside++; break;
-                        case 5: stats.invalidDepth++; break;
-                        case 6: stats.nearestOffscreen++; break;
-                        case 0: stats.visibleCount++; break;
-                        case 0xFFFFFFFF: stats.occludedCount++; break;  // -1 as uint
-                        default: break;
-                    }
-                }
-
-                context->Unmap(debugReadbackBuffer, 0);
-            }
-        }
-    }
-    */
 }
 
 void HiZOcclusion::UnbindD3DResources()
@@ -1474,177 +1154,57 @@ void HiZOcclusion::UnbindD3DResources()
     context->CSSetConstantBuffers(0, 1, nullCBs);
 }
 
-void HiZOcclusion::VerifyDepthBufferContents()
+void HiZOcclusion::DispatchComputeShader() 
 {
-    if (!settings.debugMode) return;
-    
-    auto renderer = RE::BSGraphics::Renderer::GetSingleton();
-    if (!renderer) return;
-    
-    auto context = globals::d3d::context;
-    if (!context) return;
-    
-    // Get the depth buffer we're using for HiZ
-    auto depth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-    if (!depth.depthSRV || !depth.texture) return;
-    
-    // Create a staging texture to read back depth values
-    D3D11_TEXTURE2D_DESC depthDesc{};
-    depth.texture->GetDesc(&depthDesc);
-    
-    D3D11_TEXTURE2D_DESC stagingDesc = depthDesc;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.MiscFlags = 0;
-    
-    ID3D11Texture2D* stagingTexture = nullptr;
-    HRESULT hr = globals::d3d::device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture);
-    if (FAILED(hr) || !stagingTexture) {
-        logger::warn("Failed to create staging texture for depth verification");
+    auto* context = globals::d3d::context;
+    auto* device = globals::d3d::device;
+    auto* renderer = globals::game::renderer;
+    if (!context || !device || !renderer) {
+        logger::warn("DispatchComputeShader: missing D3D context/device/renderer");
         return;
     }
-    
-    // Copy depth buffer to staging
-    context->CopyResource(stagingTexture, depth.texture);
-    
-    // Map and sample a few key positions
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    hr = context->Map(stagingTexture, 0, D3D11_MAP_READ, 0, &mapped);
-    if (SUCCEEDED(hr)) {
-        // Sample center, corners, and a few random positions
-        uint32_t centerX = depthDesc.Width / 2;
-        uint32_t centerY = depthDesc.Height / 2;
-        
-        auto sampleDepth = [&](uint32_t x, uint32_t y) -> float {
-            if (x >= depthDesc.Width || y >= depthDesc.Height) return -1.0f;
-            
-            uint8_t* row = static_cast<uint8_t*>(mapped.pData) + y * mapped.RowPitch;
-            
-            // Handle different depth formats
-            if (depthDesc.Format == DXGI_FORMAT_R32_FLOAT) {
-                return *reinterpret_cast<float*>(row + x * 4);
-            } else if (depthDesc.Format == DXGI_FORMAT_R24_UNORM_X8_TYPELESS) {
-                uint32_t packed = *reinterpret_cast<uint32_t*>(row + x * 4);
-                return (packed & 0xFFFFFF) / float(0xFFFFFF);
-            } else if (depthDesc.Format == 44) {  // DXGI_FORMAT_D24_UNORM_S8_UINT
-                uint32_t packed = *reinterpret_cast<uint32_t*>(row + x * 4);
-                return (packed & 0xFFFFFF) / float(0xFFFFFF);  // Extract 24-bit depth, ignore 8-bit stencil
-            } else if (depthDesc.Format == DXGI_FORMAT_R16_UNORM) {
-                uint16_t depth16 = *reinterpret_cast<uint16_t*>(row + x * 2);
-                return depth16 / 65535.0f;
-            }
-            logger::warn("Unsupported depth format: {}", static_cast<int>(depthDesc.Format));
-            return -1.0f;
-        };
-        
-        float centerDepth = sampleDepth(centerX, centerY);
-        float topLeftDepth = sampleDepth(depthDesc.Width / 4, depthDesc.Height / 4);
-        float topRightDepth = sampleDepth(3 * depthDesc.Width / 4, depthDesc.Height / 4);
-        float bottomLeftDepth = sampleDepth(depthDesc.Width / 4, 3 * depthDesc.Height / 4);
-        float bottomRightDepth = sampleDepth(3 * depthDesc.Width / 4, 3 * depthDesc.Height / 4);
-        
-        logger::info("Frame {} - Depth Buffer Verification:", globals::state->frameCount);
-        logger::info("  Center ({}, {}): {}", centerX, centerY, centerDepth);
-        logger::info("  TopLeft: {}, TopRight: {}", topLeftDepth, topRightDepth);
-        logger::info("  BottomLeft: {}, BottomRight: {}", bottomLeftDepth, bottomRightDepth);
-        
-        // Check for suspicious values
-        if (centerDepth <= 0.0f || centerDepth >= 1.0f) {
-            logger::warn("Suspicious center depth value: {}", centerDepth);
-        }
-        
-        // Check if all depths are the same (might indicate stale/cleared buffer)
-        if (centerDepth == topLeftDepth && centerDepth == topRightDepth && 
-            centerDepth == bottomLeftDepth && centerDepth == bottomRightDepth) {
-            logger::warn("All sampled depths are identical ({}), buffer might be cleared/stale", centerDepth);
-        }
-        
-        context->Unmap(stagingTexture, 0);
-    } else {
-        logger::warn("Failed to map staging texture for depth verification");
-    }
-    
-    stagingTexture->Release();
-}
 
-void HiZOcclusion::UpdatePerformanceMetrics()
-{
-    // Calculate current frame metrics
-    if (stats.totalTested > 0) {
-        stats.cullingEfficiency = (float(stats.culled) / float(stats.totalTested)) * 100.0f;
-    } else {
-        stats.cullingEfficiency = 0.0f;
+    if (!hiZTestCS || !geometryBoundsBuffer || !visibilityResultsBuffer || !hiZTestParamsBuffer || !hiZSRV || !hiZSampler) {
+        logger::warn("DispatchComputeShader: required resources not ready");
+        return;
     }
-    
-    // Calculate total overhead (sum of all timing components)
-    stats.cullingOverheadMs = stats.hiZBuildTimeMs + stats.geometryProcessingTimeMs + 
-                             stats.gpuCullingTimeMs + stats.readbackTimeMs;
-    
-    // Calculate geometry processing rate
-    if (stats.cullingOverheadMs > 0.0f) {
-        stats.avgGeometryPerMs = float(stats.totalTested) / stats.cullingOverheadMs;
-    } else {
-        stats.avgGeometryPerMs = 0.0f;
-    }
-    
-    // Update running averages (maintain last 60 frames)
-    stats.recentEfficiency.push_back(stats.cullingEfficiency);
-    stats.recentOverhead.push_back(stats.cullingOverheadMs);
-    stats.recentGeometryCount.push_back(stats.totalTested);
-    
-    // Trim to max history size
-    if (stats.recentEfficiency.size() > stats.maxHistoryFrames) {
-        stats.recentEfficiency.erase(stats.recentEfficiency.begin());
-        stats.recentOverhead.erase(stats.recentOverhead.begin());
-        stats.recentGeometryCount.erase(stats.recentGeometryCount.begin());
-    }
-    
-    // Calculate running averages
-    if (!stats.recentEfficiency.empty()) {
-        float sumEfficiency = 0.0f;
-        float sumOverhead = 0.0f;
-        uint32_t sumGeometry = 0;
-        
-        for (size_t i = 0; i < stats.recentEfficiency.size(); ++i) {
-            sumEfficiency += stats.recentEfficiency[i];
-            sumOverhead += stats.recentOverhead[i];
-            sumGeometry += stats.recentGeometryCount[i];
-        }
-        
-        size_t frameCount = stats.recentEfficiency.size();
-        stats.avgCullingEfficiency = sumEfficiency / float(frameCount);
-        stats.avgOverheadMs = sumOverhead / float(frameCount);
-        stats.avgGeometryCount = float(sumGeometry) / float(frameCount);
-    }
-    
-    // Log performance summary every 60 frames when debug mode is enabled
-    if (settings.debugMode && (currentFrame % 60 == 0) && !stats.recentEfficiency.empty()) {
-        logger::info("HiZ Performance Summary (last {} frames):", stats.recentEfficiency.size());
-        logger::info("  Avg Overhead: {:.3f}ms", stats.avgOverheadMs);
-        logger::info("  Avg Geometry Count: {:.0f}", stats.avgGeometryCount);
-        logger::info("  Avg Processing Rate: {:.0f} geo/ms", 
-                    stats.avgGeometryCount > 0 ? stats.avgGeometryCount / std::max(stats.avgOverheadMs, 0.001f) : 0.0f);
-        logger::info("  Points Tested Per Object: {}", stats.pointsTestedPerObject);
-    }
-}
 
-void HiZOcclusion::DispatchComputeShader() {
-    auto context = globals::d3d::context;
-    if (!context) return;
-
-    // Write all geometry bounds to GPU buffer
-    {
-        D3D11_MAPPED_SUBRESOURCE mapped{};
-        HRESULT hr = context->Map(geometryBoundsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        if (SUCCEEDED(hr)) {
-            memcpy(mapped.pData, geometryBounds.data(), numGeometry * sizeof(DirectX::XMFLOAT4));
-            context->Unmap(geometryBoundsBuffer, 0);
-        } else {
-            logger::warn("ExecuteVisibilityTests: Failed to map geometry bounds buffer");
-            return;
-        }
+    const uint32_t geometryCount = static_cast<uint32_t>(pendingGeometry.size());
+    if (geometryCount == 0) {
+        return;
     }
+
+    const uint32_t cappedCount = std::min<uint32_t>(geometryCount, maxGeometryCount);
+    if (geometryCount > maxGeometryCount) {
+        logger::warn("DispatchComputeShader: truncating batch {} -> {}", geometryCount, cappedCount);
+    }
+
+    uint32_t processed = 0;
+    for (auto& geometry : pendingGeometry) {
+        if (!geometry || processed >= cappedCount) {
+            continue;
+        }
+
+        DirectX::XMFLOAT4 sphere{};
+        sphere.x = geometry->worldBound.center.x;
+        sphere.y = geometry->worldBound.center.y;
+        sphere.z = geometry->worldBound.center.z;
+        sphere.w = geometry->worldBound.radius;
+        if (sphere.w <= 0.0f) {
+            continue;
+        }
+
+        geometryBounds.push_back(sphere);
+        pendingGeometrySnapshot.push_back(geometry);
+        ++processed;
+    }
+
+    if (processed == 0) {
+        return;
+    }
+
+    // Update the buffer for GPU
+    context->UpdateSubresource(geometryBoundsBuffer, 0, nullptr, geometryBounds.data(), 0, 0);
     
     // Update constant buffer with camera parameters
     {
@@ -1656,116 +1216,22 @@ void HiZOcclusion::DispatchComputeShader() {
         params.overlaySettings = DirectX::XMFLOAT4(
             settings.enableBoundsViewer ? 1.0f : 0.0f,
             static_cast<float>(settings.boundsMaxObjects),
-            static_cast<float>(settings.minHiZMipLevel), // minHiZMipLevel
-            0.0f);
+            0.0f, 0.0f);
         
         // Pack color toggles into float4 (7 bits used)
         float toggleBits = 0.0f;
-        if (settings.showBehindCamera) toggleBits += 1.0f;       // bit 0 - earlyOutReason 1
-        if (settings.showInvalidRadius) toggleBits += 2.0f;      // bit 1 - earlyOutReason 2
-        if (settings.showCameraInside) toggleBits += 4.0f;       // bit 2 - earlyOutReason 4
-        if (settings.showInvalidDepth) toggleBits += 8.0f;       // bit 3 - earlyOutReason 5
-        if (settings.showNearestOffscreen) toggleBits += 16.0f;  // bit 4 - earlyOutReason 6
-        if (settings.showVisible) toggleBits += 32.0f;           // bit 5 - earlyOutReason 0
-        if (settings.showOccluded) toggleBits += 64.0f;          // bit 6 - earlyOutReason -1
+        if (settings.showVisTestPassed) toggleBits += 1.0f;       // bit 0
+        if (settings.showVisInsideBounds) toggleBits += 2.0f;      // bit 1
+        if (settings.showVisInvalidRadius) toggleBits += 4.0f;       // bit 2
+        if (settings.showCulledFrustum) toggleBits += 8.0f;       // bit 3
+        if (settings.showCulledNoEarlyOut) toggleBits += 16.0f;  // bit 4
         params.overlayColorToggles = DirectX::XMFLOAT4(toggleBits, 0.0f, 0.0f, 0.0f);
 
-        if (!prevframeCamDataValid) {
-            auto vd = Util::GetCameraData(0);
-            // Extract matrices from vd (whatever accessors you currently use)
-            // Make sure to convert to row-major XMFLOAT4X4 for the cbuffers:
-            DirectX::XMMATRIX V = vd.viewMat;
-            DirectX::XMMATRIX P = vd.projMat;
-            DirectX::XMMATRIX VP = DirectX::XMMatrixMultiply(V, P);
-        
-            DirectX::XMStoreFloat4x4(&prevframeCam.view,     V);  // row-major copy
-            DirectX::XMStoreFloat4x4(&prevframeCam.proj,     P);
-            DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
-        
-            prevframeCamDataValid = true;
-            return;
-        }
-
-        // Camera Data because FrameBuffer might not be set up yet
-        auto camData = prevframeCam;
-        {
-            // Match FrameBuffer layout (row_major in HLSL): store row-major matrices.
-            // Our camData matrices appear transposed relative to FrameBuffer, so transpose before upload.
-            DirectX::XMMATRIX V  = DirectX::XMLoadFloat4x4(&camData.view);
-            DirectX::XMMATRIX P  = DirectX::XMLoadFloat4x4(&camData.proj);
-            DirectX::XMMATRIX VP = DirectX::XMLoadFloat4x4(&camData.viewProj);
-
-            DirectX::XMStoreFloat4x4(&params.cameraViewMat,     DirectX::XMMatrixTranspose(V));
-            DirectX::XMStoreFloat4x4(&params.cameraProjMat,     DirectX::XMMatrixTranspose(P));
-            DirectX::XMStoreFloat4x4(&params.cameraViewProjMat, DirectX::XMMatrixTranspose(VP));
-
-            if (settings.debugMode) {
-                // Log camera world position
-                logger::info("HiZ Params - CameraWorldPos: [{}, {}, {}]",
-                    params.cameraWorldPos.x, params.cameraWorldPos.y, params.cameraWorldPos.z);
-
-                // Log View matrix (row-major layout)
-                const auto& VM = params.cameraViewMat;
-                logger::info("Frame {}: HiZ Params - ViewMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VM._11, VM._12, VM._13, VM._14);
-                logger::info("Frame {}: HiZ Params - ViewMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VM._21, VM._22, VM._23, VM._24);
-                logger::info("Frame {}: HiZ Params - ViewMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VM._31, VM._32, VM._33, VM._34);
-                logger::info("Frame {}: HiZ Params - ViewMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VM._41, VM._42, VM._43, VM._44);
-
-                // Log Proj matrix
-                const auto& PM = params.cameraProjMat;
-                logger::info("Frame {}: HiZ Params - ProjMat r0: [{}, {}, {}, {}]", globals::state->frameCount, PM._11, PM._12, PM._13, PM._14);
-                logger::info("Frame {}: HiZ Params - ProjMat r1: [{}, {}, {}, {}]", globals::state->frameCount, PM._21, PM._22, PM._23, PM._24);
-                logger::info("Frame {}: HiZ Params - ProjMat r2: [{}, {}, {}, {}]", globals::state->frameCount, PM._31, PM._32, PM._33, PM._34);
-                logger::info("Frame {}: HiZ Params - ProjMat r3: [{}, {}, {}, {}]", globals::state->frameCount, PM._41, PM._42, PM._43, PM._44);
-
-                // Log ViewProj matrix
-                const auto& VPM = params.cameraViewProjMat;
-                logger::info("Frame {}: HiZ Params - ViewProjMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VPM._11, VPM._12, VPM._13, VPM._14);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VPM._21, VPM._22, VPM._23, VPM._24);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VPM._31, VPM._32, VPM._33, VPM._34);
-                logger::info("Frame {}: HiZ Params - ViewProjMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VPM._41, VPM._42, VPM._43, VPM._44);
-
-                // Log View Inverse matrix (row-major, matching FrameBuffer::CameraViewInverse)
-                // We uploaded View as transpose(V), so inverse(View) row-major is transpose(inverse(V))
-                DirectX::XMMATRIX V_inv = DirectX::XMMatrixInverse(nullptr, V);
-                DirectX::XMFLOAT4X4 VInvM;
-                DirectX::XMStoreFloat4x4(&VInvM, DirectX::XMMatrixTranspose(V_inv));
-                logger::info("Frame {}: HiZ Params - ViewInvMat r0: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._11, VInvM._12, VInvM._13, VInvM._14);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r1: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._21, VInvM._22, VInvM._23, VInvM._24);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r2: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._31, VInvM._32, VInvM._33, VInvM._34);
-                logger::info("Frame {}: HiZ Params - ViewInvMat r3: [{}, {}, {}, {}]", globals::state->frameCount, VInvM._41, VInvM._42, VInvM._43, VInvM._44);
-            }
-        }
-
-        // Update prevframeCam
-        {
-            auto vd = Util::GetCameraData(0);
-            DirectX::XMMATRIX V = vd.viewMat;
-            DirectX::XMMATRIX P = vd.projMat;
-            DirectX::XMMATRIX VP = DirectX::XMMatrixMultiply(V, P);
-
-            DirectX::XMStoreFloat4x4(&prevframeCam.view,     V);  // row-major copy
-            DirectX::XMStoreFloat4x4(&prevframeCam.proj,     P);
-            DirectX::XMStoreFloat4x4(&prevframeCam.viewProj, VP);
-        }
-
-        auto renderer = globals::game::renderer;
         D3D11_TEXTURE2D_DESC texDesc{};
         renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN].texture->GetDesc(&texDesc);
 
         params.bufferDim = { (float)texDesc.Width, (float)texDesc.Height };
-
-        //logger::info("HiZ Params - BufferDim: [{}, {}]", params.bufferDim.x, params.bufferDim.y);
-
         params.bufferDimInv = { 1.0f / params.bufferDim.x, 1.0f / params.bufferDim.y };
-
-        if (globals::features::upscaling.loaded && globals::features::upscaling.GetUpscaleMethod() != Upscaling::UpscaleMethod::kNONE) {
-            params.upscalingRatio = { globals::features::upscaling.dynamicResolutionWidthRatio, globals::features::upscaling.dynamicResolutionHeightRatio };
-        } else {
-            params.upscalingRatio = { 1.0f, 1.0f }; // No upscaling, ratio is 1.0
-        }
-
-        //logger::info("HiZ Params - BufferDimInv: [{}, {}]", params.bufferDimInv.x, params.bufferDimInv.y);
 
         if (SUCCEEDED(context->Map(hiZTestParamsBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
             memcpy(mapped.pData, &params, sizeof(HiZSettings));
@@ -1774,26 +1240,6 @@ void HiZOcclusion::DispatchComputeShader() {
             logger::warn("ExecuteVisibilityTests: failed to map hiZTestParamsBuffer");
             return;
         }
-
-        // Set up framebuffer
-
-        ID3D11Buffer* buffers[1] = { *globals::game::perFrame.get() };
-
-        ID3D11Buffer* vrBuffer = nullptr;
-
-        if (REL::Module::IsVR()) {
-            static REL::Relocation<ID3D11Buffer**> VRValues{ REL::Offset(0x3180688) };
-            vrBuffer = *VRValues.get();
-        }
-        if (vrBuffer) {
-            context->CSSetConstantBuffers(12, 1, buffers);
-            context->CSSetConstantBuffers(13, 1, &vrBuffer);
-        } else {
-            context->CSSetConstantBuffers(12, 1, buffers);
-        }
-
-        // Set up shared data
-        globals::state->UpdateSharedData(true, false);
     }
     
     // Bind resources and dispatch Hi-Z test compute shader for batch processing
@@ -1836,6 +1282,9 @@ void HiZOcclusion::DispatchComputeShader() {
             stats.gpuCullingTimeMs = static_cast<float>(
                 std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(endDispatch - startDispatch).count()
             );
+            if (settings.enableBoundsViewer && boundsOverlayUAV) {
+                overlayUpdatedThisFrame = true;
+            }
         }
 
         // Unbind resources (must pass arrays of nulls)
@@ -1859,110 +1308,48 @@ void HiZOcclusion::ProcessVisibilityResults(uint32_t bufferIndex) {
     // Use the geometry snapshot that was stored with this buffer
     const auto& geometrySnapshot = readbackState.geometrySnapshots[bufferIndex];
     const uint32_t geometryCount = readbackState.geometryCount[bufferIndex];
-    
-    if (settings.debugMode) {
-        logger::info("Processing {} results from buffer {} (frame {})",
-                    geometryCount, bufferIndex, readbackState.pendingFrameIndex[bufferIndex]);
-    }
 
     for (uint32_t i = 0; i < geometryCount && i < geometrySnapshot.size(); ++i) {
-        auto* geo = geometrySnapshot[i];
-
-        // Robust validity check for geo and its parent
-        if (!geo || !geo->parent) {
-            if (settings.debugMode) {
-                logger::warn("HiZOcclusion: Skipping invalid geometry object (null geo or parent) at index {}", i);
-            }
-            // If geo is invalid, remove it from temporalStates if it exists
-            auto it = temporalStates.find(geo);
-            if (it != temporalStates.end()) {
-                temporalStates.erase(it);
-            }
-            continue;
-        }
+        if (!geometrySnapshot[i]) continue;
         stats.totalTested++;
         
-        const auto& result = visibilityData[i];
-        bool currentlyOccluded = (result.objectDepth > result.sceneDepth + settings.conservativeBias);
-        
-        // Get or create temporal state
-        auto& temporal = temporalStates[geo];
+        auto& geo = geometrySnapshot[i];
+        const auto& testResults = visibilityData[i];
 
-        // Update confidence based on current visibility and temporal stability factor
-        if (currentlyOccluded) {
-            temporal.confidence = std::max(0.0f, temporal.confidence - (1.0f - settings.temporalStabilityFactor));
-        } else {
-            temporal.confidence = std::min(1.0f, temporal.confidence + (1.0f - settings.temporalStabilityFactor));
-        }
-
-        // Apply hysteresis using confidence thresholds
-        // Adjust thresholds based on temporalStabilityFactor to smooth transitions
-        float cullThreshold = 1.0f - (settings.framesToCull / 10.0f);
-        float uncullThreshold = (settings.framesToUncull / 10.0f);
-
-        bool shouldHide = (temporal.confidence < cullThreshold && temporal.wasVisible);
-        bool shouldShow = (temporal.confidence > uncullThreshold && !temporal.wasVisible);
-
-        // If object is smaller than minCullRadius, always treat as visible
-        if (geometrySnapshot[i]->worldBound.radius < settings.minCullRadius) {
-            shouldHide = false; // Never hide small objects
-            shouldShow = true;  // Always show small objects (if not already visible)
-        }
-
-        // Check for physics-related extra data on the geometry or its parents
-        if (shouldHide) {
-            bool isPhysicsObject = false;
-            RE::NiAVObject* node = geo;
-            while (node) {
-                // Check node's own name for physics-related substrings
-                if (!node->name.empty()) {
-                    const char* nodeName = node->name.c_str();
-                    if (strstr(nodeName, "HDT") != nullptr ||
-                        strstr(nodeName, "SMP") != nullptr ||
-                        strstr(nodeName, "XPMSE") != nullptr)
-                    {
-                        isPhysicsObject = true;
-                        break;
-                    }
-                }
-
-                // Existing check for extra data
-                if (node->GetExtraData("XPMSE") || node->GetExtraData("HDT") || node->GetExtraData("SMP")) {
-                    isPhysicsObject = true;
-                    break;
-                }
-                if (isPhysicsObject) {
-                    break;
-                }
-                node = node->parent;
+        switch (testResults.result) {
+            case -3: {// Not culled: Test passed
+                geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                stats.visTestPassed++;
+                break;
             }
-
-            if (isPhysicsObject) {
-                shouldHide = false;
-                shouldShow = true;
+            case -2: { // Not culled: Inside bounds
+                geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                stats.visInsideBounds++;
+                break;
             }
-        }
-
-        if (shouldHide) {
-            geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
-            temporal.wasVisible = false;
-            unCullNextFrame.push_back(geo);
-            stats.culled++;
-        } else if (shouldShow) {
-            geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
-            temporal.wasVisible = true;
-            stats.visible++;
-        } else {
-            // No state change - keep current visibility
-            if (temporal.wasVisible) {
-                stats.visible++;
-                // If currently occluded but not confident yet, keep testing
-                if (currentlyOccluded) {
-                    unCullNextFrame.push_back(geo);
-                }
-            } else {
-                stats.culled++;
-                unCullNextFrame.push_back(geo);  // Keep testing
+            case -1: { // Not culled: Invalid Radius
+                geo->GetFlags().reset(RE::NiAVObject::Flag::kHidden);
+                stats.visInvalidRadius++;
+                break;
+            }
+            case 0: { // default value
+                stats.defaultValue++;
+                break;
+            }
+            case 1: { // Culled: Frustum
+                stats.culledFrustum++;
+                geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
+                unCullNextFrame.push_back(geo);
+                break;
+            }
+            case 2: { // Culled: No early out
+                stats.culledNoEarlyOut++;
+                geo->GetFlags().set(RE::NiAVObject::Flag::kHidden);
+                unCullNextFrame.push_back(geo);
+                break;
+            }
+            default: {
+                break;
             }
         }
     }
